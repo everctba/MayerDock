@@ -25,7 +25,8 @@ Status: **0.1.0 — MVP funcional**. Detalhes de produto em [docs/PRD.md](docs/P
   vazio.
 - **Liberar** no menu: libera uma divisão específica (mostra qual app está nela).
 - **Ícone na bandeja:** clique duplo mostra/oculta o dock; botão direito abre o menu
-  (mostrar/ocultar, sair).
+  (mostrar/ocultar, sair). Ao ocultar manualmente (bandeja, `Ctrl+Alt+M` ou menu), as
+  janelas encaixadas são **liberadas** (voltam ao lugar) — nenhum app fica escondido.
 - O dock **some sozinho** quando um jogo ou vídeo entra em fullscreen (D3D exclusivo ou
   janela cobrindo o monitor) e volta quando o fullscreen termina.
 - **Start, pesquisa, Task View e flyouts do shell:** enquanto um desses painéis está em

@@ -554,6 +554,8 @@ fn release_slot(s: &mut State, index: usize) {
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                 );
             }
+            // Garante que a janela esteja visível (pode ter sido SW_HIDE'd).
+            ShowWindow(slot.hwnd, SW_SHOWNOACTIVATE);
         }
     }
     unsafe {
@@ -629,6 +631,25 @@ fn show_dock(s: &mut State) {
         InvalidateRect(s.hwnd, ptr::null(), 0);
     }
     win::log("dock visível");
+}
+
+/// Liga/desliga o dock manualmente (atalho, bandeja, menu).
+///
+/// Ao ocultar, as janelas encaixadas são **liberadas** (voltam ao lugar) em vez
+/// de escondidas: o usuário continua vendo os apps dele.
+fn toggle_manual(s: &mut State) {
+    if !s.manual_hidden {
+        release_all(s);
+        s.manual_hidden = true;
+    } else {
+        s.manual_hidden = false;
+    }
+    update_visibility(s);
+    win::log(if s.manual_hidden {
+        "dock oculto manualmente (janelas liberadas)"
+    } else {
+        "dock visível (manual)"
+    });
 }
 
 fn update_visibility(s: &mut State) {
@@ -1042,10 +1063,7 @@ fn on_menu_command(s: &mut State, id: usize) {
         IDM_EXIT => unsafe {
             PostMessageW(s.hwnd, WM_CLOSE, 0, 0);
         },
-        IDM_TOGGLE => {
-            s.manual_hidden = !s.manual_hidden;
-            update_visibility(s);
-        }
+        IDM_TOGGLE => toggle_manual(s),
         IDM_SLOTS_BASE..=IDM_SLOTS_LAST => set_slot_count(s, id - IDM_SLOTS_BASE + 1),
         IDM_RELEASE_BASE..=IDM_RELEASE_LAST => release_slot(s, id - IDM_RELEASE_BASE),
         _ if id >= IDM_WINDOW_BASE => {
@@ -1341,8 +1359,7 @@ unsafe extern "system" fn dock_proc(
         WM_TRAY => {
             match lparam as u32 {
                 WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
-                    s.manual_hidden = !s.manual_hidden;
-                    update_visibility(s);
+                    toggle_manual(s);
                 }
                 WM_RBUTTONUP => tray_menu(s),
                 _ => {}
@@ -1389,8 +1406,7 @@ unsafe extern "system" fn dock_proc(
         }
         WM_HOTKEY => {
             if wparam as i32 == HOTKEY_ID {
-                s.manual_hidden = !s.manual_hidden;
-                update_visibility(s);
+                toggle_manual(s);
             }
             0
         }
