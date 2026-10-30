@@ -34,23 +34,45 @@ Status: **0.1.0 — MVP funcional**. Detalhes de produto em [docs/PRD.md](docs/P
   pesquisa e o Start abrem no tamanho cheio em vez de ficarem cortados pelo dock; ao
   fechar, o dock volta.
 - Largura e número de divisões persistidos em `%APPDATA%\MayerDock\config.ini`.
+- **FluxTV (camada de escurecimento):** o MayerDock reergue as janelas do FluxTV acima
+  de si (classes `FluxTV.*`), então o multiply/escurecimento também cobre a faixa do dock,
+  as janelas encaixadas e o menu — os dois apps são topmost e sem isso o dock ficava por
+  cima da camada.
 - Sem admin, sem instalador: um `.exe` + `config.ini`.
 
 ## Build
 
 ```powershell
-.\build.ps1            # compila (MSVC se houver link.exe; senão GNU + MinGW)
-.\build.ps1 -Run       # compila e abre
+.\build.ps1              # compila e monta dist\MayerDock\
+.\build.ps1 -Run         # + abre o .exe da pasta portátil
+.\build.ps1 -Shortcut    # + atalho "MayerDock.lnk" na área de trabalho
 ```
 
-O binário sai em `target\release\mayerdock.exe`. O build é **offline** e usa apenas
-`windows-sys` do cache local do Cargo.
+O build é **offline** e usa apenas `windows-sys` do cache local do Cargo. O `build.ps1`
+escolhe o toolchain sozinho: MSVC quando existe `link.exe`; senão `rustup` +
+`x86_64-pc-windows-gnu` com o primeiro gcc x86_64 encontrado (w64devkit/MSYS2/MinGW-w64),
+criando o stub de `libgcc_eh.a` quando a distribuição não o traz.
 
-Rodando direto:
+Saídas:
+
+```text
+target\release\mayerdock.exe      # binário cru (não portátil: fica no build)
+dist\MayerDock\                    # PASTA PORTÁTIL — copie/mova esta
+├─ mayerdock.exe
+├─ README.md
+├─ LICENSE
+└─ docs\PRD.md
+```
+
+Rodando a versão portátil:
 
 ```powershell
-.\target\release\mayerdock.exe
+.\dist\MayerDock\mayerdock.exe
 ```
+
+> O `config.ini` e o `mayerdock.log` continuam em `%APPDATA%\MayerDock\` (por usuário),
+> então mover a pasta não perde configuração. Se o MayerDock estiver aberto, feche antes
+> de recompilar (o `.exe` fica travado).
 
 ## Como usar
 

@@ -422,6 +422,33 @@ fn any_slot_occupied(s: &State) -> bool {
     s.slots.iter().any(|slot| slot.is_some())
 }
 
+/// Mantém a camada do FluxTV (app irmão, overlay de escurecimento) acima do
+/// dock: os dois são topmost, e o dock se reergue em vários momentos — sem
+/// isso a faixa do dock fica de fora do escurecimento.
+fn keep_flux_above() {
+    unsafe {
+        EnumWindows(Some(flux_raise_proc), 0);
+    }
+}
+
+unsafe extern "system" fn flux_raise_proc(hwnd: HWND, _lparam: LPARAM) -> BOOL {
+    if IsWindowVisible(hwnd) != 0 {
+        let class = class_name(hwnd);
+        if class.starts_with("FluxTV.") {
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+    1
+}
+
 fn slot_process(s: &State, index: usize) -> String {
     match &s.slots[index] {
         Some(slot) => {
@@ -483,6 +510,10 @@ fn sync_slot(s: &mut State, force: bool) {
             );
         }
     }
+
+    // Depois de reerguer/normalizar as janelas encaixadas, garante o FluxTV no
+    // topo para o escurecimento também cobrir o dock.
+    keep_flux_above();
 }
 
 /// Coloca a janela na primeira divisão livre.
@@ -1053,6 +1084,7 @@ fn open_menu(s: &mut State) {
         y: wr.top + s.btn_menu.top,
     };
     s.menu_open = menu::show(s.hwnd, anchor, items);
+    keep_flux_above();
     if !s.menu_open {
         win::log("menu: não foi possível abrir");
     }
@@ -1288,6 +1320,7 @@ fn tray_menu(s: &mut State) {
         kind: menu::Kind::Item,
     });
     s.menu_open = menu::show(s.hwnd, p, items);
+    keep_flux_above();
     if !s.menu_open {
         win::log("menu: não foi possível abrir (bandeja)");
     }

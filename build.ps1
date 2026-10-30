@@ -1,5 +1,5 @@
 <#
-    Compila o MayerDock.
+    Compila o MayerDock e monta a pasta portátil dist\MayerDock\.
 
     Usa o toolchain MSVC padrão quando existe link.exe; senão usa
     x86_64-pc-windows-gnu do rustup + o primeiro gcc x86_64 encontrado
@@ -7,8 +7,16 @@
 
     No w64devkit o libgcc_eh.a pode faltar; como no FluxTV, criamos um stub
     vazio e apontamos o linker para ele via -L native=...
+
+    Uso:
+        .\build.ps1              # compila e monta dist\MayerDock\
+        .\build.ps1 -Run         # + abre o .exe da pasta portátil
+        .\build.ps1 -Shortcut    # + atalho na área de trabalho
 #>
-param([switch]$Run)
+param(
+    [switch]$Run,
+    [switch]$Shortcut
+)
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -116,7 +124,40 @@ try {
     if (-not (Test-Path $exe)) { throw "binário não gerado: $exe" }
     Write-Host "OK: $exe" -ForegroundColor Green
 
-    if ($Run) { Start-Process $exe }
+    # ------------------------------------------------------------------
+    # Pasta portátil: dist\MayerDock\ com .exe + docs
+    # ------------------------------------------------------------------
+    $dist = Join-Path $root 'dist\MayerDock'
+    if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
+    New-Item -ItemType Directory -Force -Path $dist | Out-Null
+    Copy-Item -LiteralPath $exe (Join-Path $dist 'mayerdock.exe')
+    foreach ($doc in @('README.md', 'LICENSE')) {
+        $src = Join-Path $root $doc
+        if (Test-Path $src) { Copy-Item -LiteralPath $src $dist }
+    }
+    $docsDir = Join-Path $root 'docs'
+    if (Test-Path $docsDir) {
+        Copy-Item -LiteralPath $docsDir (Join-Path $dist 'docs') -Recurse
+    }
+    $portableExe = Join-Path $dist 'mayerdock.exe'
+    Write-Host "portátil: $dist" -ForegroundColor Green
+
+    # ------------------------------------------------------------------
+    # Atalho opcional na área de trabalho
+    # ------------------------------------------------------------------
+    if ($Shortcut) {
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        $lnk = Join-Path $desktop 'MayerDock.lnk'
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($lnk)
+        $shortcut.TargetPath = $portableExe
+        $shortcut.WorkingDirectory = $dist
+        $shortcut.Description = 'MayerDock — dock lateral'
+        $shortcut.Save()
+        Write-Host "atalho: $lnk" -ForegroundColor Green
+    }
+
+    if ($Run) { Start-Process -FilePath $portableExe }
 }
 finally {
     $env:PATH = $origPath
