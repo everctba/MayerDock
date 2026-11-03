@@ -27,6 +27,8 @@ Status: **0.1.0 — MVP funcional**. Detalhes de produto em [docs/PRD.md](docs/P
 - **Ícone na bandeja:** clique duplo mostra/oculta o dock; botão direito abre o menu
   (mostrar/ocultar, sair). Ao ocultar manualmente (bandeja, `Ctrl+Alt+M` ou menu), as
   janelas encaixadas são **liberadas** (voltam ao lugar) — nenhum app fica escondido.
+  O ícone é o **próprio do MayerDock**, embutido no `.exe` (`assets/icon.ico`) — o mesmo
+  que aparece no Explorer, no Gerenciador de Tarefas e no atalho.
 - O dock **some sozinho** quando um jogo ou vídeo entra em fullscreen (D3D exclusivo ou
   janela cobrindo o monitor) e volta quando o fullscreen termina.
 - **Start, pesquisa, Task View e flyouts do shell:** enquanto um desses painéis está em
@@ -100,14 +102,33 @@ também alterna e o botão direito abre o menu.
 - Se o MayerDock for **morto à força** (Gerenciador de Tarefas / `Stop-Process`), as
   janelas encaixadas podem continuar *topmost* até serem restauradas à mão — sai sempre
   pelo ✕/menu/bandeja.
-- O ícone da bandeja usa o ícone padrão do Windows por enquanto (ícone próprio é P1).
+
+## Ícone
+
+O ícone do app vive em `assets\`:
+
+- `assets\icon.png` — arte de origem (512×512 RGBA), é o que se edita;
+- `assets\icon.ico` — multi-tamanho (16/24/32/48/64/128/256) embutido no `.exe` pelo
+  `build.rs` (via `windres` no GNU/MinGW ou `rc.exe` no MSVC) e usado na bandeja.
+
+Para trocar o ícone: substitua `assets\icon.png` e regenere o `.ico` (Pillow), depois
+recompile:
+
+```powershell
+python -c "from PIL import Image; Image.open(r'assets\icon.png').convert('RGBA').save(r'assets\icon.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+.\build.ps1
+```
 
 ## Estrutura
 
 ```text
 MayerDock\
 ├─ Cargo.toml
-├─ build.ps1        # MSVC ou GNU + MinGW, build offline
+├─ build.rs         # embute ícone + versão no .exe (windres/rc.exe)
+├─ build.ps1        # MSVC ou GNU + MinGW, build offline + pasta portátil
+├─ assets\
+│  ├─ icon.png      # arte de origem do ícone
+│  └─ icon.ico      # multi-tamanho, embutido no .exe
 ├─ docs\PRD.md      # PRD do produto
 └─ src\
    ├─ main.rs       # entrada

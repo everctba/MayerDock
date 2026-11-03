@@ -1281,13 +1281,22 @@ fn tray_add(s: &State) {
     let mut nid = tray_nid(s.hwnd);
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
-    nid.hIcon = unsafe { LoadIconW(ptr::null_mut(), IDI_APPLICATION) };
+
+    // Ícone embutido no exe pelo build.rs (recurso 1); fallback: genérico.
+    let embedded = unsafe { LoadIconW(win::hinstance(), 1usize as *const u16) };
+    nid.hIcon = if embedded.is_null() {
+        unsafe { LoadIconW(ptr::null_mut(), IDI_APPLICATION) }
+    } else {
+        embedded
+    };
     copy_wide(&mut nid.szTip, "MayerDock — dock lateral");
     let ok = unsafe { Shell_NotifyIconW(NIM_ADD, &nid) };
     if ok == 0 {
         win::log("aviso: ícone da bandeja não foi criado");
+    } else if embedded.is_null() {
+        win::log("ícone da bandeja criado (genérico; recurso embutido ausente)");
     } else {
-        win::log("ícone da bandeja criado");
+        win::log("ícone da bandeja criado (embutido)");
     }
 }
 

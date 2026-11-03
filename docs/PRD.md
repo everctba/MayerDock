@@ -86,11 +86,11 @@ reorganizar janelas a cada maximizada.
 | RF-11 | Instância única + atalho global `Ctrl+Alt+M` | Segunda instância só traz o dock à frente; atalho alterna visibilidade |
 | RF-12 | Tolerar reinício do Explorer / mudança de resolução | `ABN_POSCHANGED` e `WM_DISPLAYCHANGE` reaplicam o AppBar |
 | RF-13 | Sair da frente para Start/pesquisa/Task View | O dock oculta e libera a área reservada (painel abre inteiro); ao fechar, o dock volta |
-| RF-14 | Ícone na bandeja | Clique duplo mostra/oculta; botão direito abre menu (mostrar/ocultar, sair); sai sempre pelo ✕/menu/bandeja |
+| RF-14 | Ícone próprio na bandeja e no `.exe` | `assets/icon.ico` multi-tamanho embutido pelo `build.rs` (windres no GNU/MinGW ou rc.exe no MSVC); a bandeja carrega o recurso embutido; clique duplo mostra/oculta; botão direito abre menu |
 
 ## 6. Fora do MVP (backlog)
 
-- **P1:** ícone próprio na bandeja (hoje usa o ícone padrão do Windows), dock à esquerda,
+- **P1:** dock à esquerda,
   escolher monitor, atalhos para "encaixar janela em foco".
 - **P2:** perfis salvos por app, divisões desiguais (redimensionar a divisória), modo
   "reservar metade morta da TV", auto-hide do dock, tema claro.
