@@ -40,7 +40,8 @@ Status: **0.1.0 — MVP funcional**. Detalhes de produto em [docs/PRD.md](docs/P
   de si (classes `FluxTV.*`), então o multiply/escurecimento também cobre a faixa do dock,
   as janelas encaixadas e o menu — os dois apps são topmost e sem isso o dock ficava por
   cima da camada.
-- Sem admin, sem instalador: um `.exe` + `config.ini`.
+- **Portátil ou instalador:** a pasta `dist\MayerDock\` roda direto (sem admin); ou use o
+  `MayerDock-Setup.exe` para instalar com atalhos, desinstalador e escolha de pasta.
 
 ## Build
 
@@ -48,6 +49,7 @@ Status: **0.1.0 — MVP funcional**. Detalhes de produto em [docs/PRD.md](docs/P
 .\build.ps1              # compila e monta dist\MayerDock\
 .\build.ps1 -Run         # + abre o .exe da pasta portátil
 .\build.ps1 -Shortcut    # + atalho "MayerDock.lnk" na área de trabalho
+.\build.ps1 -Installer   # + instalador Windows em dist\installer\
 ```
 
 O build é **offline** e usa apenas `windows-sys` do cache local do Cargo. O `build.ps1`
@@ -58,12 +60,13 @@ criando o stub de `libgcc_eh.a` quando a distribuição não o traz.
 Saídas:
 
 ```text
-target\release\mayerdock.exe      # binário cru (não portátil: fica no build)
-dist\MayerDock\                    # PASTA PORTÁTIL — copie/mova esta
+target\release\mayerdock.exe               # binário cru (não portátil: fica no build)
+dist\MayerDock\                             # PASTA PORTÁTIL — copie/mova esta
 ├─ mayerdock.exe
 ├─ README.md
 ├─ LICENSE
 └─ docs\PRD.md
+dist\installer\MayerDock-Setup-x.y.z.exe    # INSTALADOR Windows (Inno Setup)
 ```
 
 Rodando a versão portátil:
@@ -75,6 +78,38 @@ Rodando a versão portátil:
 > O `config.ini` e o `mayerdock.log` continuam em `%APPDATA%\MayerDock\` (por usuário),
 > então mover a pasta não perde configuração. Se o MayerDock estiver aberto, feche antes
 > de recompilar (o `.exe` fica travado).
+
+## Instalador
+
+Gerado com **Inno Setup 6** pela flag `-Installer`. O `build.ps1` procura o `ISCC.exe` em
+`%LOCALAPPDATA%\Programs\Inno Setup 6`, em `Program Files` ou na variável
+`INNO_SETUP_ISCC`; se não achar, avisa e segue só com a pasta portátil.
+
+```powershell
+.\build.ps1 -Installer
+# -> dist\installer\MayerDock-Setup-0.1.0.exe
+```
+
+Comportamento do instalador:
+
+- **página de escolha da pasta** (`DisableDirPage=no`) — você define onde instalar;
+  padrão `%LOCALAPPDATA%\Programs\MayerDock` (por usuário, **sem admin**);
+- oferece **"só para mim"** ou **"para todos os usuários"** (a segunda usa
+  `Program Files` e pede UAC);
+- **fecha o MayerDock em execução** antes de copiar (`taskkill` → WM_CLOSE, saída limpa,
+  liberando as janelas e o AppBar);
+- cria atalho no **Menu Iniciar** e, se marcado, na **área de trabalho**;
+- aparece em **Aplicativos instalados** com desinstalador padrão e ícone próprio;
+- opção **abrir o MayerDock** ao terminar;
+- desinstalar remove programa + atalhos + entrada de desinstalação; o
+  `%APPDATA%\MayerDock\config.ini` é **preservado**.
+
+Instalar o Inno Setup sem admin (como foi feito nesta máquina):
+
+```powershell
+# baixe em https://jrsoftware.org/isdl.php e rode:
+innosetup-6.x.x.exe /VERYSILENT /CURRENTUSER /SUPPRESSMSGBOXES /NORESTART
+```
 
 ## Como usar
 
@@ -129,6 +164,8 @@ MayerDock\
 ├─ assets\
 │  ├─ icon.png      # arte de origem do ícone
 │  └─ icon.ico      # multi-tamanho, embutido no .exe
+├─ installer\
+│  └─ MayerDock.iss # script do instalador (Inno Setup 6)
 ├─ docs\PRD.md      # PRD do produto
 └─ src\
    ├─ main.rs       # entrada

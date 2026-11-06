@@ -12,10 +12,12 @@
         .\build.ps1              # compila e monta dist\MayerDock\
         .\build.ps1 -Run         # + abre o .exe da pasta portátil
         .\build.ps1 -Shortcut    # + atalho na área de trabalho
+        .\build.ps1 -Installer   # + instalador (Inno Setup) em dist\installer\
 #>
 param(
     [switch]$Run,
-    [switch]$Shortcut
+    [switch]$Shortcut,
+    [switch]$Installer
 )
 
 $ErrorActionPreference = 'Stop'
@@ -155,6 +157,42 @@ try {
         $shortcut.Description = 'MayerDock — dock lateral'
         $shortcut.Save()
         Write-Host "atalho: $lnk" -ForegroundColor Green
+    }
+
+    # ------------------------------------------------------------------
+    # Instalador (Inno Setup) — opcional via -Installer
+    # ------------------------------------------------------------------
+    if ($Installer) {
+        $iscc = $env:INNO_SETUP_ISCC
+        if (-not $iscc) {
+            $candidates = @(
+                (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
+                (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 5\ISCC.exe'),
+                'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+                'C:\Program Files\Inno Setup 6\ISCC.exe'
+            )
+            foreach ($c in $candidates) {
+                if (Test-Path $c) { $iscc = $c; break }
+            }
+        }
+        if (-not $iscc -or -not (Test-Path $iscc)) {
+            Write-Host 'aviso: Inno Setup (ISCC.exe) nao encontrado; instalador nao gerado.' -ForegroundColor Yellow
+            Write-Host '  instale sem admin: baixe https://jrsoftware.org/isdl.php e rode:'
+            Write-Host '    innosetup-x.y.z.exe /VERYSILENT /CURRENTUSER /SUPPRESSMSGBOXES /NORESTART'
+            Write-Host '  ou aponte a variavel INNO_SETUP_ISCC para o ISCC.exe.'
+        }
+        else {
+            $iss = Join-Path $root 'installer\MayerDock.iss'
+            if (-not (Test-Path $iss)) { throw "script do instalador nao encontrado: $iss" }
+            Write-Host "[mayerdock] ISCC: $iscc" -ForegroundColor DarkGray
+            & $iscc '/Qp' $iss
+            if ($LASTEXITCODE -ne 0) { throw "ISCC falhou (exit $LASTEXITCODE)." }
+            $installer = Get-ChildItem (Join-Path $root 'dist\installer') -Filter 'MayerDock-Setup-*.exe' -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($installer) {
+                Write-Host "instalador: $($installer.FullName)" -ForegroundColor Green
+            }
+        }
     }
 
     if ($Run) { Start-Process -FilePath $portableExe }

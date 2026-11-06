@@ -87,6 +87,7 @@ reorganizar janelas a cada maximizada.
 | RF-12 | Tolerar reinício do Explorer / mudança de resolução | `ABN_POSCHANGED` e `WM_DISPLAYCHANGE` reaplicam o AppBar |
 | RF-13 | Sair da frente para Start/pesquisa/Task View | O dock oculta e libera a área reservada (painel abre inteiro); ao fechar, o dock volta |
 | RF-14 | Ícone próprio na bandeja e no `.exe` | `assets/icon.ico` multi-tamanho embutido pelo `build.rs` (windres no GNU/MinGW ou rc.exe no MSVC); a bandeja carrega o recurso embutido; clique duplo mostra/oculta; botão direito abre menu |
+| RF-15 | Instalador Windows com escolha de pasta | Inno Setup (`build.ps1 -Installer`) → `dist\installer\MayerDock-Setup-x.y.z.exe`; página de pasta habilitada, padrão `%LOCALAPPDATA%\Programs\MayerDock` (por usuário, sem admin) ou `Program Files` (todos os usuários, UAC); atalhos Menu Iniciar/desktop opcional; fecha o app em execução; entrada em Aplicativos instalados com desinstalador; `%APPDATA%` preservado |
 
 ## 6. Fora do MVP (backlog)
 
