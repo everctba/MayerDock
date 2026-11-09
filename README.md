@@ -7,6 +7,11 @@ OneNote.
 
 Status: **0.1.0 — MVP funcional**. Detalhes de produto em [docs/PRD.md](docs/PRD.md).
 
+> **Linux/Wayland:** existe um projeto separado em [MayerDock-Linux](MayerDock-Linux/README.md)
+> — decisão de portabilidade em
+> [ADR-001](MayerDock-Linux/docs/ADR-001-linux.md) e escopo em
+> [PRD](MayerDock-Linux/docs/PRD.md). Por ora é proposta (não iniciado); foco **Wayland**. 
+
 ## O que ele faz
 
 - Registra um AppBar na **borda direita** do monitor, encostado à esquerda da barra de
@@ -166,6 +171,7 @@ MayerDock\
 │  └─ icon.ico      # multi-tamanho, embutido no .exe
 ├─ installer\
 │  └─ MayerDock.iss # script do instalador (Inno Setup 6)
+├─ MayerDock-Linux\ # projeto irmão (Wayland): ADR + PRD, sem código ainda
 ├─ docs\PRD.md      # PRD do produto
 └─ src\
    ├─ main.rs       # entrada
