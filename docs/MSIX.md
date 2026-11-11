@@ -170,11 +170,11 @@ certificado de dev. Instalado via `Add-AppxPackage` e ativado por `shell:AppsFol
 | V1 | `SHAppBarMessage` sob MSIX | ✅ reserva real: `rcWork.right = 1717` (2560 − taskbar − dock 772) |
 | V2 | `SetWindowPos` em janela de outro processo | ✅ janela encaixada na divisão 0 e liberada |
 | V3 | `Shell_NotifyIcon` com identity | ✅ "ícone da bandeja criado (embutido)" |
-| V4 | `SetWinEventHook` / `RegisterHotKey` | ⏳ não exercitado explicitamente |
-| V5 | `SHQueryUserNotificationState` (fullscreen) | ⏳ não exercitado |
+| V4 | `SetWinEventHook` / `RegisterHotKey` | ✅ Start/pesquisa com `fg=SearchApp` → dock oculta (rcWork 2489) e volta (1717); `Ctrl+Alt+M` oculta/mostra; hook e hotkey funcionam no pacote |
+| V5 | `SHQueryUserNotificationState` (fullscreen) | ⏳ não exercitado com fullscreen real (jogo/vídeo); teste com janela borderless não virou foreground |
 | V6 | Upgrade MSIX 0.1.0 → 0.1.1 | ✅ app fechado: upgrade aplicado (`0.1.1.0`) e **config preservado**; app aberto: `0x80073D02` ("recursos em uso") — esperado no sideload; a Store gerencia/fecha o app |
 | V7 | Uninstall + dados | ✅ pacote removido; **`config.ini` preservado** |
-| V8 | Inno + MSIX simultâneos | ⏳ pendente (conflito conhecido) |
+| V8 | Inno + MSIX simultâneos | ✅ **já coberto pela instância única**: com o pacote rodando, abrir o portátil/log `instância já em execução` e não sobe segundo dock (1 processo) |
 | V9 | Executar `.exe` direto de `WindowsApps` | ❌ `Access is denied` (esperado; ativar pelo shell/alias) |
 
 Observações:

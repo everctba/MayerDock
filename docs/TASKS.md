@@ -69,7 +69,9 @@ estar pronta.
 - [x] Desinstalação limpa e config preservado (V7) — **feito**.
 - [x] Upgrade 0.1.0 → 0.1.1 com app fechado: config preservado (V6) — **feito**;
       com app aberto falha com `0x80073D02` (esperado; Store gerencia).
-- [ ] V4/V5 (hook de foreground/hotkey/fullscreen) e V8 (Inno+MSIX simultâneos) — pendentes.
+- [x] V4: hook de foreground (Start/pesquisa) e hotkey `Ctrl+Alt+M` funcionam no pacote — **feito**.
+- [x] V8: Inno + MSIX simultâneos não duplicam dock (instância única) — **feito**.
+- [ ] V5: detecção de fullscreen real (jogo/vídeo) — pendente de teste manual.
 - [ ] WACK aprovado.
 - [ ] Documentar em `docs\MSIX.md` como gerar, instalar e publicar.
 
