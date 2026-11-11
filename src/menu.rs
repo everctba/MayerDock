@@ -58,6 +58,8 @@ struct MenuState {
     items: Vec<MenuItem>,
     hover: Option<usize>,
     font: HFONT,
+    /// Fator de escala do monitor (dpi / 96).
+    scale: f64,
 }
 
 static mut MENU: Option<MenuState> = None;
@@ -70,12 +72,18 @@ fn rgb(r: u8, g: u8, b: u8) -> u32 {
     (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
 }
 
-fn item_height(kind: Kind) -> i32 {
-    match kind {
+fn item_height(kind: Kind, scale: f64) -> i32 {
+    let base = match kind {
         Kind::Header => HEADER_H,
         Kind::Sep => SEP_H,
         Kind::Item => ITEM_H,
-    }
+    };
+    ((base as f64) * scale).round().max(1.0) as i32
+}
+
+/// Converte uma métrica lógica (96 dpi) em pixels físicos do menu.
+fn sp(m: &MenuState, logical: i32) -> i32 {
+    ((logical as f64) * m.scale).round() as i32
 }
 
 pub fn register_class() {
@@ -98,25 +106,35 @@ pub fn register_class() {
 }
 
 /// Abre o menu ancorado perto de `anchor` (ponto em coordenadas de tela).
-pub fn show(owner: HWND, anchor: POINT, items: Vec<MenuItem>) -> bool {
+/// `scale` é o fator de DPI do monitor do dock (`dpi / 96`).
+pub fn show(owner: HWND, anchor: POINT, items: Vec<MenuItem>, scale: f64) -> bool {
     if items.is_empty() || menu().is_some() {
         return false;
     }
 
+    let scale = scale.clamp(0.5, 5.0);
     let (mon, _) = win::monitor_rects_at(anchor);
-    let width = WIDTH.min((mon.right - mon.left) - 16).max(180);
-    let total: i32 = PAD * 2 + items.iter().map(|i| item_height(i.kind)).sum::<i32>();
+    let width = (((WIDTH as f64) * scale).round() as i32)
+        .min((mon.right - mon.left) - 16)
+        .max(180);
+    let pad = ((PAD as f64) * scale).round() as i32;
+    let total: i32 = pad * 2
+        + items
+            .iter()
+            .map(|i| item_height(i.kind, scale))
+            .sum::<i32>();
     let max_height = (mon.bottom - mon.top) - 16;
     let height = total.min(max_height).max(60);
 
-    let mut x = anchor.x - width - 6;
+    let margin = ((6.0 * scale).round() as i32).max(2);
+    let mut x = anchor.x - width - margin;
     if x < mon.left + 4 {
-        x = anchor.x + 6;
+        x = anchor.x + margin;
     }
     if x + width > mon.right - 4 {
         x = mon.right - 4 - width;
     }
-    let mut y = anchor.y - 6;
+    let mut y = anchor.y - margin;
     if y + height > mon.bottom - 4 {
         y = mon.bottom - 4 - height;
     }
@@ -148,9 +166,10 @@ pub fn show(owner: HWND, anchor: POINT, items: Vec<MenuItem>) -> bool {
     }
 
     let face = win::wide("Segoe UI");
+    let font_height = -((FONT_SIZE as f64 * scale).round() as i32).max(8);
     let font = unsafe {
         CreateFontW(
-            -FONT_SIZE,
+            font_height,
             0,
             0,
             0,
@@ -174,6 +193,7 @@ pub fn show(owner: HWND, anchor: POINT, items: Vec<MenuItem>) -> bool {
             items,
             hover: None,
             font,
+            scale,
         });
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
@@ -206,9 +226,9 @@ fn point_of(lparam: LPARAM) -> (i32, i32) {
 
 fn index_at(y: i32) -> Option<usize> {
     let m = menu()?;
-    let mut top = PAD;
+    let mut top = sp(m, PAD);
     for (i, item) in m.items.iter().enumerate() {
-        let h = item_height(item.kind);
+        let h = item_height(item.kind, m.scale);
         if y >= top && y < top + h {
             return Some(i);
         }
@@ -277,9 +297,9 @@ fn paint(hwnd: HWND) {
             return;
         };
 
-        let mut y = PAD;
+        let mut y = sp(m, PAD);
         for (index, item) in m.items.iter().enumerate() {
-            let h = item_height(item.kind);
+            let h = item_height(item.kind, m.scale);
             if y + h > rc.bottom {
                 break;
             }
@@ -287,9 +307,9 @@ fn paint(hwnd: HWND) {
             match item.kind {
                 Kind::Header => {
                     let mut tr = RECT {
-                        left: row.left + 10,
+                        left: row.left + sp(m, 10),
                         top: y,
-                        right: row.right - 10,
+                        right: row.right - sp(m, 10),
                         bottom: y + h,
                     };
                     draw_text(hdc, m.font, rgb(146, 150, 168), &item.label, &mut tr);
@@ -298,7 +318,12 @@ fn paint(hwnd: HWND) {
                     let line = CreateSolidBrush(rgb(52, 54, 64));
                     FillRect(
                         hdc,
-                        &RECT { left: row.left + 8, top: y + 4, right: row.right - 8, bottom: y + 5 },
+                        &RECT {
+                            left: row.left + sp(m, 8),
+                            top: y + sp(m, 4),
+                            right: row.right - sp(m, 8),
+                            bottom: y + sp(m, 5),
+                        },
                         line,
                     );
                     DeleteObject(line);
@@ -311,9 +336,9 @@ fn paint(hwnd: HWND) {
                         DeleteObject(hl);
                     }
                     let mut tr = RECT {
-                        left: row.left + 10,
+                        left: row.left + sp(m, 10),
                         top: y,
-                        right: row.right - 10,
+                        right: row.right - sp(m, 10),
                         bottom: y + h,
                     };
                     let color = if enabled {

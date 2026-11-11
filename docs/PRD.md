@@ -10,12 +10,12 @@ MayerDock é um utilitário Windows (Rust, Win32 puro) que cria um **dock latera
 uma faixa da tela** — o mesmo mecanismo que a barra de tarefas usa (protocolo **AppBar**).
 A área útil do Windows encolhe de verdade: janelas maximizadas param na borda do dock, e
 não é possível cobri-lo arrastando outra janela por cima. Dentro da faixa, o usuário
-**encaixa a janela de qualquer aplicativo** (navegador, editor, player) — o "Nível A" do
-conceito inspirado no *Dock to Desktop* do OneNote.
+**encaixa a janela de qualquer aplicativo** (navegador, editor, player), mantendo um
+painel fixo sempre visível ao lado do trabalho.
 
 ## 2. Contexto e problema
 
-O comportamento de referência é o **Dock to Desktop** do OneNote:
+O comportamento de referência é o de um **painel lateral fixo reservado**:
 
 - o painel fica preso a uma borda (normalmente a direita), ocupa a altura toda e fica
   sempre visível;
@@ -31,9 +31,9 @@ O que falta no Windows:
 - o usuário também tem um caso concreto de tela com metade do backlight queimada (TV usada
   como monitor) e precisa que o desktop "viva" só na metade boa.
 
-**Decisão de produto:** replicar o comportamento do OneNote generalizado — dock
-redimensionável, com **uma janela externa encaixada por vez** no MVP — e, no futuro, um
-modo "reservar região morta" da TV.
+**Decisão de produto:** replicar esse comportamento de painel fixo generalizado — dock
+redimensionável, com até três janelas externas encaixadas — e, no futuro, um modo
+"reservar região morta" da TV.
 
 ## 3. Objetivos
 
@@ -84,10 +84,11 @@ reorganizar janelas a cada maximizada.
 | RF-09 | Persistir largura e divisões em `%APPDATA%\MayerDock\config.ini` | Reabrir mantém a largura e o número de divisões |
 | RF-10 | Sair restaurando tudo | Área de trabalho volta ao normal; todas as janelas liberadas |
 | RF-11 | Instância única + atalho global `Ctrl+Alt+M` | Segunda instância só traz o dock à frente; atalho alterna visibilidade |
-| RF-12 | Tolerar reinício do Explorer / mudança de resolução | `ABN_POSCHANGED` e `WM_DISPLAYCHANGE` reaplicam o AppBar |
+| RF-12 | Tolerar reinício do Explorer / mudança de resolução | `TaskbarCreated` re-registra bandeja + AppBar; `ABN_POSCHANGED`/`WM_DISPLAYCHANGE` reaplicam a faixa |
 | RF-13 | Sair da frente para Start/pesquisa/Task View | O dock oculta e libera a área reservada (painel abre inteiro); ao fechar, o dock volta |
 | RF-14 | Ícone próprio na bandeja e no `.exe` | `assets/icon.ico` multi-tamanho embutido pelo `build.rs` (windres no GNU/MinGW ou rc.exe no MSVC); a bandeja carrega o recurso embutido; clique duplo mostra/oculta; botão direito abre menu |
 | RF-15 | Instalador Windows com escolha de pasta | Inno Setup (`build.ps1 -Installer`) → `dist\installer\MayerDock-Setup-x.y.z.exe`; página de pasta habilitada, padrão `%LOCALAPPDATA%\Programs\MayerDock` (por usuário, sem admin) ou `Program Files` (todos os usuários, UAC); atalhos Menu Iniciar/desktop opcional; fecha o app em execução; entrada em Aplicativos instalados com desinstalador; `%APPDATA%` preservado |
+| RF-16 | Diagnóstico e suporte a MSIX | `--status`/`--version`/`--help` na linha de comando; `--status` mostra `packaged`/`package` e caminhos reais; app manifest Win32 embutido (`PerMonitorV2` + `asInvoker`); sem autostart (decisão) |
 
 ## 6. Fora do MVP (backlog)
 
@@ -95,6 +96,10 @@ reorganizar janelas a cada maximizada.
   escolher monitor, atalhos para "encaixar janela em foco".
 - **P2:** perfis salvos por app, divisões desiguais (redimensionar a divisória), modo
   "reservar metade morta da TV", auto-hide do dock, tema claro.
+- **P2 — build MSIX / Microsoft Store:** empacotar como MSIX (`runFullTrust`), manter o
+  instalador Inno e a pasta portátil funcionando **em paralelo**; requisitos e riscos em
+  [MSIX.md](MSIX.md), task e critérios em
+  [TASKS.md](TASKS.md#t-001--build-msix-para-microsoft-store-em-paralelo-ao-instalador-atual).
 - **P3:** múltiplos docks, presets de layout, animação de entrada.
 
 ## 7. Requisitos não-funcionais

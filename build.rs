@@ -15,6 +15,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/icon.ico");
+    println!("cargo:rerun-if-changed=assets/app.manifest");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -28,12 +29,22 @@ fn main() {
         return;
     }
 
+    // Manifesto Win32 (DPI PerMonitorV2 + asInvoker) — recurso RT_MANIFEST (24).
+    let app_manifest = manifest.join("assets").join("app.manifest");
+    let manifest_res = if app_manifest.is_file() {
+        let path = app_manifest.to_string_lossy().replace('\\', "/");
+        format!("1 24 \"{path}\"\n")
+    } else {
+        println!("cargo:warning=assets/app.manifest nao encontrado; exe sem manifesto (DPI/asInvoker)");
+        String::new()
+    };
+
     let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.1.0".to_string());
     let (v0, v1, v2, v3) = version_parts(&version);
     let icon_path = icon.to_string_lossy().replace('\\', "/");
 
     let rc = format!(
-        "1 ICON \"{icon_path}\"\n\
+        "1 ICON \"{icon_path}\"\n{manifest_res}\
          1 VERSIONINFO\n\
          FILEVERSION {v0},{v1},{v2},{v3}\n\
          PRODUCTVERSION {v0},{v1},{v2},{v3}\n\

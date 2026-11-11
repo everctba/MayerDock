@@ -13,11 +13,13 @@
         .\build.ps1 -Run         # + abre o .exe da pasta portátil
         .\build.ps1 -Shortcut    # + atalho na área de trabalho
         .\build.ps1 -Installer   # + instalador (Inno Setup) em dist\installer\
+        .\build.ps1 -Msix        # + pacote MSIX em dist\msix\ (não substitui o instalador)
 #>
 param(
     [switch]$Run,
     [switch]$Shortcut,
-    [switch]$Installer
+    [switch]$Installer,
+    [switch]$Msix
 )
 
 $ErrorActionPreference = 'Stop'
@@ -193,6 +195,19 @@ try {
                 Write-Host "instalador: $($installer.FullName)" -ForegroundColor Green
             }
         }
+    }
+
+    # ------------------------------------------------------------------
+    # MSIX — opcional via -Msix (em paralelo ao instalador Inno)
+    # ------------------------------------------------------------------
+    if ($Msix) {
+        $msixScript = Join-Path $root 'installer\msix\build-msix.ps1'
+        if (-not (Test-Path $msixScript)) { throw "script MSIX nao encontrado: $msixScript" }
+        Write-Host '[mayerdock] gerando MSIX...' -ForegroundColor DarkGray
+        & $msixScript
+        $msixFile = Get-ChildItem (Join-Path $root 'dist\msix') -Filter 'MayerDock-*.msix' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($msixFile) { Write-Host "msix: $($msixFile.FullName)" -ForegroundColor Green }
     }
 
     if ($Run) { Start-Process -FilePath $portableExe }

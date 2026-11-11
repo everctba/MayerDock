@@ -25,7 +25,7 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::UI::HiDpi::{
-    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, ReleaseCapture, SetCapture, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
@@ -41,19 +41,23 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageW, GetWindowLongW,
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
     IsWindow, IsWindowVisible, KillTimer, LoadCursorW, PostMessageW, PostQuitMessage,
-    RegisterClassW, SetCursor, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
+    RegisterClassW, RegisterWindowMessageW, SetCursor, SetForegroundWindow, SetTimer, SetWindowPos,
+    ShowWindow,
     TranslateMessage, GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZEWE, IDI_APPLICATION,
     LoadIconW, MSG, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_SHOWWINDOW, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_HOTKEY,
     WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP,
-    WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WM_DPICHANGED, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS,
 };
 
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::menu;
 use crate::win;
 
+// Métricas em pixels LÓGICOS (96 dpi). Em runtime tudo é multiplicado pelo
+// fator de escala do monitor (`dpi / 96`) — ver `px()`.
 const HEADER_H: i32 = 40;
 const PAD: i32 = 2;
 const EDGE_GRAB: i32 = 6;
@@ -73,6 +77,8 @@ const WM_FOREGROUND: u32 = win::WM_APP + 50;
 const WM_TRAY: u32 = win::WM_APP + 60;
 
 static mut HOOK: HWINEVENTHOOK = std::ptr::null_mut();
+/// Mensagem registrada `TaskbarCreated` (enviada quando o Explorer reinicia).
+static mut TASKBAR_CREATED: u32 = 0;
 
 const IDM_EXIT: usize = 101;
 const IDM_TOGGLE: usize = 102;
@@ -96,7 +102,12 @@ struct State {
     abd: APPBARDATA,
     registered: bool,
     busy: bool,
+    /// Largura em pixels lógicos (96 dpi); ver `physical_width()`.
     width: i32,
+    /// DPI efetivo do monitor do dock (96 = 100%).
+    dpi: u32,
+    /// dpi / 96.
+    scale: f64,
     hidden: bool,
     manual_hidden: bool,
     /// Menu popup aberto: não re-promover a janela encaixada (cobriria o menu).
@@ -129,11 +140,12 @@ fn rgb(r: u8, g: u8, b: u8) -> u32 {
     (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
 }
 
-fn make_font(size: i32, weight: i32) -> HFONT {
+fn make_font(size_logical: i32, weight: i32, scale: f64) -> HFONT {
     let face = win::wide("Segoe UI");
+    let height = -((size_logical as f64 * scale).round() as i32).max(8);
     unsafe {
         CreateFontW(
-            -size,
+            height,
             0,
             0,
             0,
@@ -152,14 +164,18 @@ fn make_font(size: i32, weight: i32) -> HFONT {
 }
 
 impl State {
-    fn new(hwnd: HWND, width: i32, slot_count: usize) -> State {
+    fn new(hwnd: HWND, width: i32, slot_count: usize, dpi: u32) -> State {
         let slot_count = slot_count.clamp(1, 3);
+        let dpi = dpi.clamp(48, 480);
+        let scale = dpi as f64 / 96.0;
         State {
             hwnd,
             abd: APPBARDATA::default(),
             registered: false,
             busy: false,
             width,
+            dpi,
+            scale,
             hidden: false,
             manual_hidden: false,
             menu_open: false,
@@ -172,11 +188,47 @@ impl State {
             btn_menu: RECT { left: 0, top: 0, right: 0, bottom: 0 },
             btn_close: RECT { left: 0, top: 0, right: 0, bottom: 0 },
             btn_release: RECT { left: 0, top: 0, right: 0, bottom: 0 },
-            font_title: make_font(15, 600),
-            font_ui: make_font(13, 400),
-            font_hint: make_font(13, 400),
+            font_title: make_font(15, 600, scale),
+            font_ui: make_font(13, 400, scale),
+            font_hint: make_font(13, 400, scale),
         }
     }
+
+    /// Largura física (pixels reais) reservada no AppBar.
+    fn physical_width(&self) -> i32 {
+        ((self.width as f64) * self.scale).round().max(80.0) as i32
+    }
+
+    fn rebuild_fonts(&mut self) {
+        unsafe {
+            DeleteObject(self.font_title);
+            DeleteObject(self.font_ui);
+            DeleteObject(self.font_hint);
+        }
+        self.font_title = make_font(15, 600, self.scale);
+        self.font_ui = make_font(13, 400, self.scale);
+        self.font_hint = make_font(13, 400, self.scale);
+    }
+
+    /// Atualiza o DPI (mudança de escala do Windows ou de monitor).
+    fn set_dpi(&mut self, dpi: u32) {
+        let dpi = dpi.clamp(48, 480);
+        if dpi == self.dpi {
+            return;
+        }
+        self.dpi = dpi;
+        self.scale = dpi as f64 / 96.0;
+        self.rebuild_fonts();
+        win::log(&format!(
+            "dpi = {dpi} (escala {:.2}x) — métricas e fontes rescaladas",
+            self.scale
+        ));
+    }
+}
+
+/// Converte uma métrica lógica (96 dpi) para pixels físicos no monitor atual.
+fn px(s: &State, logical: i32) -> i32 {
+    ((logical as f64) * s.scale).round() as i32
 }
 
 /// Ponto de entrada: cria o dock, registra o AppBar e roda o loop de mensagens.
@@ -224,9 +276,43 @@ pub fn run(cfg: Config) -> i32 {
         return 1;
     }
 
+    // DPI do monitor do dock (a janela já existe e é per-monitor aware v2).
+    let mut dpi = unsafe { GetDpiForWindow(hwnd) };
+    if dpi == 0 {
+        dpi = 96;
+    }
+    // QA: permite simular outra escala sem mexer no Windows (ex.: 144 = 150%).
+    if let Ok(value) = std::env::var("MAYERDOCK_DPI") {
+        if let Ok(forced) = value.trim().parse::<u32>() {
+            dpi = forced.clamp(48, 480);
+            win::log(&format!("dpi forçado por MAYERDOCK_DPI={dpi}"));
+        }
+    }
+    let scale = dpi as f64 / 96.0;
+
+    // Migração: configs antigas guardavam a largura em pixels físicos.
+    let mut width_logical = cfg.width.clamp(MIN_W, MAX_W);
+    if let Some(legacy) = cfg.legacy_width {
+        width_logical = ((legacy as f64) / scale).round() as i32;
+        width_logical = width_logical.clamp(MIN_W, MAX_W);
+        win::log(&format!(
+            "config antiga migrada: largura {legacy}px físicos -> {width_logical} lógicos (dpi {dpi})"
+        ));
+    }
+
     unsafe {
-        STATE = Some(State::new(hwnd, width, cfg.slots));
+        STATE = Some(State::new(hwnd, width_logical, cfg.slots, dpi));
         let s = st();
+
+        // Persiste no formato novo (width_logical) se veio de config antiga.
+        if cfg.legacy_width.is_some() {
+            Config {
+                width: s.width,
+                slots: s.slot_count,
+                legacy_width: None,
+            }
+            .save();
+        }
 
         register_appbar(s);
         if !s.registered {
@@ -249,6 +335,13 @@ pub fn run(cfg: Config) -> i32 {
         SetTimer(hwnd, TIMER_TICK, 1000, None);
         tray_add(s);
 
+        // Mensagem do shell: enviada quando o Explorer reinicia (a bandeja e o
+        // AppBar são perdidos nesse momento).
+        TASKBAR_CREATED = RegisterWindowMessageW(win::wide("TaskbarCreated").as_ptr());
+        if TASKBAR_CREATED == 0 {
+            win::log("aviso: RegisterWindowMessage(TaskbarCreated) falhou");
+        }
+
         HOOK = SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,
             EVENT_SYSTEM_FOREGROUND,
@@ -262,9 +355,17 @@ pub fn run(cfg: Config) -> i32 {
             win::log("aviso: SetWinEventHook falhou (dock pode não sair da frente do Start)");
         }
 
+        let packaged = win::package_full_name();
+        if let Some(name) = &packaged {
+            win::log(&format!("modo pacote MSIX: {name}"));
+        }
         win::log(&format!(
-            "dock iniciado: largura={width} divisões={} monitor={}x{}",
+            "dock iniciado: largura={} lógicos ({} físicos) dpi={} divisões={} empacotado={} monitor={}x{}",
+            s.width,
+            s.physical_width(),
+            s.dpi,
             s.slot_count,
+            packaged.is_some(),
             mon.right - mon.left,
             mon.bottom - mon.top
         ));
@@ -333,10 +434,11 @@ fn apply_appbar(s: &mut State) {
     s.busy = true;
 
     let (mon, _work) = win::monitor_rects(s.hwnd);
+    let width_px = s.physical_width();
     let mut abd = s.abd;
     abd.uEdge = ABE_RIGHT;
     abd.rc = RECT {
-        left: mon.right - s.width,
+        left: mon.right - width_px,
         top: mon.top,
         right: mon.right,
         bottom: mon.bottom,
@@ -344,7 +446,7 @@ fn apply_appbar(s: &mut State) {
 
     let queried = unsafe { SHAppBarMessage(ABM_QUERYPOS, &mut abd) };
     // O shell pode ter afastado a faixa da taskbar; preserva a largura pedida.
-    abd.rc.left = abd.rc.right - s.width;
+    abd.rc.left = abd.rc.right - width_px;
     if abd.rc.left < mon.left {
         abd.rc.left = mon.left;
     }
@@ -383,11 +485,13 @@ fn apply_appbar(s: &mut State) {
 
 fn content_rect(s: &State) -> RECT {
     let r = s.abd.rc;
+    let pad = px(s, PAD);
+    let header = px(s, HEADER_H);
     RECT {
-        left: r.left + PAD,
-        top: r.top + HEADER_H,
-        right: (r.right - PAD).max(r.left + PAD + 80),
-        bottom: (r.bottom - PAD).max(r.top + HEADER_H + 80),
+        left: r.left + pad,
+        top: r.top + header,
+        right: (r.right - pad).max(r.left + pad + px(s, 80)),
+        bottom: (r.bottom - pad).max(r.top + header + px(s, 80)),
     }
 }
 
@@ -395,9 +499,9 @@ fn content_rect(s: &State) -> RECT {
 fn slot_rect(s: &State, index: usize) -> RECT {
     let c = content_rect(s);
     let n = s.slot_count.max(1) as i32;
-    let gap = 4;
+    let gap = px(s, 4);
     let total = (c.bottom - c.top).max(n);
-    let each = ((total - gap * (n - 1)) / n).max(40);
+    let each = ((total - gap * (n - 1)) / n).max(px(s, 40));
     let top = c.top + index as i32 * (each + gap);
     RECT {
         left: c.left,
@@ -544,11 +648,46 @@ fn pin_first_free(s: &mut State, hwnd: HWND) -> bool {
         valid_origin: ok,
     });
     sync_slot(s, true);
+    ensure_slot_fits(s);
     unsafe {
         InvalidateRect(s.hwnd, ptr::null(), 0);
     }
     win::log(&format!("janela encaixada na divisão {free}"));
     true
+}
+
+/// Janelas com tamanho mínimo grande (comum em telas com escala > 100%) podem
+/// recusar encolher até a divisão e vazar do dock. Nesse caso, aumenta a largura
+/// do dock (até o máximo) para caber.
+fn ensure_slot_fits(s: &mut State) {
+    let mut needed = 0i32;
+    for index in 0..s.slot_count {
+        let Some(slot) = &s.slots[index] else {
+            continue;
+        };
+        let target = slot_rect(s, index);
+        let mut actual = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        unsafe {
+            GetWindowRect(slot.hwnd, &mut actual);
+        }
+        let target_w = target.right - target.left;
+        let actual_w = actual.right - actual.left;
+        if actual_w > target_w + 2 {
+            needed = needed.max(actual_w + 2 * px(s, PAD));
+        }
+    }
+    if needed > 0 {
+        let logical = ((needed as f64) / s.scale).ceil() as i32;
+        let new_width = logical.clamp(MIN_W, MAX_W);
+        if new_width > s.width {
+            win::log(&format!(
+                "janela não caberia na divisão; aumentando dock de {} para {} lógicos",
+                s.width, new_width
+            ));
+            s.width = new_width;
+            apply_appbar(s);
+        }
+    }
 }
 
 fn release_slot(s: &mut State, index: usize) {
@@ -617,6 +756,7 @@ fn set_slot_count(s: &mut State, count: usize) {
     Config {
         width: s.width,
         slots: s.slot_count,
+        legacy_width: None,
     }
     .save();
     unsafe {
@@ -771,21 +911,25 @@ fn paint(hwnd: HWND, s: &mut State) {
         FillRect(hdc, &rc, bg);
         DeleteObject(bg);
 
-        let hdr = RECT { left: 0, top: 0, right: w, bottom: HEADER_H };
+        let header_h = px(s, HEADER_H);
+        let btn_w = px(s, 32);
+        let btn_gap = px(s, 2);
+
+        let hdr = RECT { left: 0, top: 0, right: w, bottom: header_h };
         let hb = CreateSolidBrush(rgb(30, 30, 36));
         FillRect(hdc, &hdr, hb);
         DeleteObject(hb);
 
-        let edge = RECT { left: 0, top: 0, right: 2, bottom: h };
+        let edge = RECT { left: 0, top: 0, right: px(s, 2).max(1), bottom: h };
         let eb = CreateSolidBrush(rgb(74, 112, 240));
         FillRect(hdc, &edge, eb);
         DeleteObject(eb);
 
         let mut title = RECT {
-            left: 14,
+            left: px(s, 14),
             top: 0,
-            right: (w - 136).max(40),
-            bottom: HEADER_H,
+            right: (w - px(s, 136)).max(px(s, 40)),
+            bottom: header_h,
         };
         draw_text(
             hdc,
@@ -796,18 +940,24 @@ fn paint(hwnd: HWND, s: &mut State) {
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
         );
 
-        let close = RECT { left: w - 38, top: 7, right: w - 6, bottom: HEADER_H - 7 };
+        let margin = px(s, 6);
+        let close = RECT {
+            left: w - btn_w - margin,
+            top: px(s, 7),
+            right: w - margin,
+            bottom: header_h - px(s, 7),
+        };
         let menu_b = RECT {
-            left: close.left - 40,
-            top: 7,
-            right: close.left - 6,
-            bottom: HEADER_H - 7,
+            left: close.left - btn_w - btn_gap,
+            top: close.top,
+            right: close.left - btn_gap,
+            bottom: close.bottom,
         };
         let release = RECT {
-            left: menu_b.left - 40,
-            top: 7,
-            right: menu_b.left - 6,
-            bottom: HEADER_H - 7,
+            left: menu_b.left - btn_w - btn_gap,
+            top: close.top,
+            right: menu_b.left - btn_gap,
+            bottom: close.bottom,
         };
         draw_button(hdc, s.font_ui, &release, "←", any_slot_occupied(s));
         draw_button(hdc, s.font_ui, &menu_b, "☰", true);
@@ -819,15 +969,17 @@ fn paint(hwnd: HWND, s: &mut State) {
         // Separadores entre as divisões verticais.
         if s.slot_count > 1 {
             let line = CreateSolidBrush(rgb(62, 66, 82));
+            let inset = px(s, 4);
+            let esp = px(s, 2).max(1);
             for index in 1..s.slot_count {
                 let r = slot_rect(s, index);
                 FillRect(
                     hdc,
                     &RECT {
-                        left: r.left + 4,
-                        top: r.top - 4,
-                        right: r.right - 4,
-                        bottom: r.top - 2,
+                        left: r.left + inset,
+                        top: r.top - 2 * esp,
+                        right: r.right - inset,
+                        bottom: r.top - esp,
                     },
                     line,
                 );
@@ -837,10 +989,10 @@ fn paint(hwnd: HWND, s: &mut State) {
 
         if !any_slot_occupied(s) {
             let mut hint = RECT {
-                left: 14,
-                top: HEADER_H + 24,
-                right: w - 14,
-                bottom: h - 24,
+                left: px(s, 14),
+                top: header_h + px(s, 24),
+                right: w - px(s, 14),
+                bottom: h - px(s, 24),
             };
             draw_text(
                 hdc,
@@ -897,7 +1049,7 @@ fn on_lbutton_down(s: &mut State, lparam: LPARAM) {
     // botões/menu são tratados no WM_LBUTTONUP (senão o próprio LBUTTONUP do
     // clique dispensa o menu que acabou de abrir).
     let (x, _y) = client_point(lparam);
-    if x <= EDGE_GRAB {
+    if x <= px(s, EDGE_GRAB) {
         s.resizing = true;
         let mut p = POINT { x: 0, y: 0 };
         unsafe {
@@ -918,14 +1070,19 @@ fn on_lbutton_up(s: &mut State, lparam: LPARAM) {
         Config {
             width: s.width,
             slots: s.slot_count,
+            legacy_width: None,
         }
         .save();
-        win::log(&format!("largura salva: {}", s.width));
+        win::log(&format!(
+            "largura salva: {} lógicos ({} físicos)",
+            s.width,
+            s.physical_width()
+        ));
         return;
     }
 
     let (x, y) = client_point(lparam);
-    if y < HEADER_H {
+    if y < px(s, HEADER_H) {
         if point_in(&s.btn_close, x, y) {
             unsafe {
                 PostMessageW(s.hwnd, WM_CLOSE, 0, 0);
@@ -956,21 +1113,21 @@ fn on_mouse_move(s: &mut State) {
     unsafe {
         GetCursorPos(&mut p);
     }
-    let dx = s.resize_start_x - p.x;
-    let new_width = (s.resize_start_w + dx).clamp(MIN_W, MAX_W);
+    let dx = (s.resize_start_x - p.x) as f64 / s.scale;
+    let new_width = ((s.resize_start_w as f64 + dx).round() as i32).clamp(MIN_W, MAX_W);
     if new_width != s.width {
         s.width = new_width;
         apply_appbar(s);
     }
 }
 
-fn set_cursor(hwnd: HWND) {
+fn set_cursor(hwnd: HWND, s: &State) {
     unsafe {
         let mut p = POINT { x: 0, y: 0 };
         GetCursorPos(&mut p);
         let mut rc: RECT = std::mem::zeroed();
         GetWindowRect(hwnd, &mut rc);
-        let cursor = if p.x - rc.left <= EDGE_GRAB {
+        let cursor = if p.x - rc.left <= px(s, EDGE_GRAB) {
             LoadCursorW(ptr::null_mut(), IDC_SIZEWE)
         } else {
             LoadCursorW(ptr::null_mut(), IDC_ARROW)
@@ -1083,7 +1240,7 @@ fn open_menu(s: &mut State) {
         x: wr.left + s.btn_menu.left,
         y: wr.top + s.btn_menu.top,
     };
-    s.menu_open = menu::show(s.hwnd, anchor, items);
+    s.menu_open = menu::show(s.hwnd, anchor, items, s.scale);
     keep_flux_above();
     if !s.menu_open {
         win::log("menu: não foi possível abrir");
@@ -1228,6 +1385,65 @@ fn enumerate_windows() -> Vec<(HWND, String)> {
 // Encerramento
 // ---------------------------------------------------------------------------
 
+/// Chamado quando o Explorer reinicia (`TaskbarCreated`): re-adiciona o ícone
+/// da bandeja, re-registra o AppBar e restaura o z-order.
+fn shell_restart(s: &mut State) {
+    win::log("shell reiniciou (TaskbarCreated): re-registrando bandeja e AppBar");
+    // Remove antes de adicionar: idempotente e cobre tanto o caso real (o shell
+    // perdeu os registros) quanto uma notificação duplicada.
+    tray_remove(s);
+    tray_add(s);
+    if !s.hidden {
+        remove_appbar(s);
+        register_appbar(s);
+        if s.registered {
+            win::log("appbar re-registrada após restart do shell");
+            apply_appbar(s);
+            let r = s.abd.rc;
+            unsafe {
+                SetWindowPos(
+                    s.hwnd,
+                    HWND_TOPMOST,
+                    r.left,
+                    r.top,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                    SWP_NOACTIVATE,
+                );
+            }
+            sync_slot(s, true);
+        } else {
+            win::log("aviso: AppBar não re-registrou após restart do shell");
+        }
+    }
+    keep_flux_above();
+    unsafe {
+        InvalidateRect(s.hwnd, ptr::null(), 0);
+    }
+}
+
+/// `--status`: versão, modo (pacote/portátil), config e caminhos reais.
+pub fn print_status() {
+    let cfg = Config::load();
+    let packaged = win::package_full_name();
+    let data = config::resolved_data_dir();
+    let mut out = String::new();
+    out.push_str(&format!("version: {}\r\n", env!("CARGO_PKG_VERSION")));
+    out.push_str(&format!(
+        "packaged: {}\r\n",
+        if packaged.is_some() { "true" } else { "false" }
+    ));
+    if let Some(name) = &packaged {
+        out.push_str(&format!("package: {name}\r\n"));
+    }
+    out.push_str(&format!("width_logical: {}\r\n", cfg.width));
+    out.push_str(&format!("slots: {}\r\n", cfg.slots));
+    out.push_str(&format!("data_dir: {}\r\n", data.display()));
+    out.push_str(&format!("config: {}\r\n", data.join("config.ini").display()));
+    out.push_str(&format!("log: {}\r\n", data.join("mayerdock.log").display()));
+    win::console_print(&out);
+}
+
 fn cleanup(s: &mut State) {
     unsafe {
         KillTimer(s.hwnd, TIMER_TICK);
@@ -1243,6 +1459,7 @@ fn cleanup(s: &mut State) {
     Config {
         width: s.width,
         slots: s.slot_count,
+        legacy_width: None,
     }
     .save();
     unsafe {
@@ -1328,7 +1545,7 @@ fn tray_menu(s: &mut State) {
         cmd: IDM_EXIT,
         kind: menu::Kind::Item,
     });
-    s.menu_open = menu::show(s.hwnd, p, items);
+    s.menu_open = menu::show(s.hwnd, p, items, s.scale);
     keep_flux_above();
     if !s.menu_open {
         win::log("menu: não foi possível abrir (bandeja)");
@@ -1380,6 +1597,12 @@ unsafe extern "system" fn dock_proc(
             ABN_STATECHANGE => {}
             _ => {}
         }
+        return 0;
+    }
+
+    // O Explorer reiniciou: bandeja e AppBar precisam ser re-registrados.
+    if TASKBAR_CREATED != 0 && msg == TASKBAR_CREATED {
+        shell_restart(s);
         return 0;
     }
 
@@ -1439,7 +1662,7 @@ unsafe extern "system" fn dock_proc(
             0
         }
         WM_SETCURSOR => {
-            set_cursor(hwnd);
+            set_cursor(hwnd, s);
             1
         }
         WM_FOREGROUND => {
@@ -1452,7 +1675,25 @@ unsafe extern "system" fn dock_proc(
             }
             0
         }
-        WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
+        WM_DPICHANGED => {
+            let dpi = (wparam & 0xFFFF) as u32;
+            s.set_dpi(dpi);
+            apply_appbar(s);
+            sync_slot(s, true);
+            unsafe {
+                InvalidateRect(s.hwnd, ptr::null(), 0);
+            }
+            0
+        }
+        WM_DISPLAYCHANGE => {
+            let dpi = unsafe { GetDpiForWindow(hwnd) };
+            if dpi > 0 {
+                s.set_dpi(dpi);
+            }
+            apply_appbar(s);
+            0
+        }
+        WM_SETTINGCHANGE => {
             apply_appbar(s);
             0
         }

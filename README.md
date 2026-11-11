@@ -2,8 +2,7 @@
 
 Dock lateral do Windows que **reserva uma faixa da tela** (protocolo AppBar, o mesmo da
 barra de tarefas) e **encaixa janelas** de outras aplicações nessa faixa — até **3
-empilhadas verticalmente** — o "Nível A" do conceito inspirado no *Dock to Desktop* do
-OneNote.
+empilhadas verticalmente** — mantendo um painel fixo sempre visível ao lado do trabalho.
 
 Status: **0.1.0 — MVP funcional**. Detalhes de produto em [docs/PRD.md](docs/PRD.md).
 
@@ -36,6 +35,8 @@ Status: **0.1.0 — MVP funcional**. Detalhes de produto em [docs/PRD.md](docs/P
   que aparece no Explorer, no Gerenciador de Tarefas e no atalho.
 - O dock **some sozinho** quando um jogo ou vídeo entra em fullscreen (D3D exclusivo ou
   janela cobrindo o monitor) e volta quando o fullscreen termina.
+- Se o **Explorer reiniciar**, o app re-registra automaticamente a **bandeja** e a **faixa
+  do AppBar** (`TaskbarCreated`), sem precisar reiniciar o MayerDock.
 - **Start, pesquisa, Task View e flyouts do shell:** enquanto um desses painéis está em
   primeiro plano o dock sai da frente (a área reservada é liberada), então a barra de
   pesquisa e o Start abrem no tamanho cheio em vez de ficarem cortados pelo dock; ao
@@ -55,6 +56,7 @@ Status: **0.1.0 — MVP funcional**. Detalhes de produto em [docs/PRD.md](docs/P
 .\build.ps1 -Run         # + abre o .exe da pasta portátil
 .\build.ps1 -Shortcut    # + atalho "MayerDock.lnk" na área de trabalho
 .\build.ps1 -Installer   # + instalador Windows em dist\installer\
+.\build.ps1 -Msix        # + pacote MSIX em dist\msix\ (não substitui o instalador)
 ```
 
 O build é **offline** e usa apenas `windows-sys` do cache local do Cargo. O `build.ps1`
@@ -83,6 +85,29 @@ Rodando a versão portátil:
 > O `config.ini` e o `mayerdock.log` continuam em `%APPDATA%\MayerDock\` (por usuário),
 > então mover a pasta não perde configuração. Se o MayerDock estiver aberto, feche antes
 > de recompilar (o `.exe` fica travado).
+
+## Linha de comando (diagnóstico)
+
+```powershell
+.\dist\MayerDock\mayerdock.exe --status    # versão, modo, config e caminhos reais
+.\dist\MayerDock\mayerdock.exe --version
+.\dist\MayerDock\mayerdock.exe --help
+```
+
+O `--status` mostra:
+
+```text
+version: 0.1.0
+packaged: false                 # true quando rodando como MSIX
+width_logical: 772
+slots: 1
+data_dir: C:\Users\...\AppData\Roaming\MayerDock
+config: C:\Users\...\AppData\Roaming\MayerDock\config.ini
+log: C:\Users\...\AppData\Roaming\MayerDock\mayerdock.log
+```
+
+No modo **MSIX** (`packaged: true`, com `package:` também), esses caminhos são os da
+**área do pacote** (redirecionada pelo Windows) — é o endereço real para achar config/log.
 
 ## Instalador
 
@@ -116,6 +141,33 @@ Instalar o Inno Setup sem admin (como foi feito nesta máquina):
 innosetup-6.x.x.exe /VERYSILENT /CURRENTUSER /SUPPRESSMSGBOXES /NORESTART
 ```
 
+## MSIX (em paralelo ao instalador)
+
+O mesmo build gera um pacote **MSIX** (F1/F2) sem tocar no Inno/portátil:
+
+```powershell
+.\build.ps1 -Msix                            # dist\msix\MayerDock-0.1.0.msix (sem assinatura)
+.\installer\msix\build-msix.ps1 -SelfSign    # pacote assinado com certificado de dev
+.\installer\msix\build-msix.ps1 -SelfSign -Install   # assina e instala (sideload)
+.\installer\msix\build-msix.ps1 -Uninstall           # remove o pacote instalado
+```
+
+- **Tooling sem admin:** o script procura `makeappx.exe`/`signtool.exe` no Windows SDK, no
+  PATH ou em `.tools\win-sdk-buildtools*\` (pacote NuGet
+  `Microsoft.Windows.SDK.BuildTools`, versão **10.0.22621.x**; a 28000.x não roda no
+  Windows 10 19041). `.tools\` é ignorado pelo git.
+- **Sem escolha de pasta:** MSIX instala em `WindowsApps` — a escolha de pasta continua
+  sendo exclusiva do instalador Inno.
+- **Sideload** (validado em 2026-11-11): Modo de Desenvolvedor + certificado de dev em
+  `LocalMachine\TrustedPeople` (uma vez, como admin) — sem isso o Windows recusa com
+  `0x800B0109`. Pacote instalado ativa normalmente; AppBar, janelas e bandeja funcionam.
+- **Dados:** em full trust o `%APPDATA%` **não** é redirecionado — `config.ini`/log ficam no
+  caminho real e **sobrevivem** ao uninstall (mesmo comportamento do Inno).
+- **Store:** suba o pacote **sem assinatura** — a Store assina. `Identity`/`Publisher` são
+  parametrizáveis (`-IdentityName`, `-Publisher`).
+- Não rode a versão Inno e a MSIX ao mesmo tempo (duas AppBars/trays). O `.exe` instalado
+  em `WindowsApps` não roda direto — abra pelo Menu Iniciar/shell (`AppsFolder`).
+
 ## Como usar
 
 1. Abra o MayerDock — o dock aparece na direita da tela (à esquerda da taskbar).
@@ -127,6 +179,30 @@ innosetup-6.x.x.exe /VERYSILENT /CURRENTUSER /SUPPRESSMSGBOXES /NORESTART
 
 O recurso global: `Ctrl+Alt+M` alterna mostrar/ocultar o dock. Na bandeja, clique duplo
 também alterna e o botão direito abre o menu.
+
+## DPI e escala do Windows
+
+O MayerDock é **per-monitor DPI aware v2** — o `.exe` embute um application manifest com
+`PerMonitorV2` e `asInvoker`, e em runtime também chama `SetProcessDpiAwarenessContext`
+(no-op quando o manifesto já definiu). Com *Display settings → Scale* acima de 100%:
+
+- a interface (fontes, cabeçalho, botões, menu) **escala junto** — as métricas são
+  definidas em pixels lógicos (96 dpi) e multiplicadas pelo fator do monitor (`dpi / 96`);
+- a **largura** do dock é guardada em pixels lógicos (`width_logical` no `config.ini`) e a
+  faixa do AppBar é reservada em pixels físicos convertidos;
+- **mudança de escala em runtime** (mover para outro monitor com DPI diferente, alterar o
+  Scale) dispara `WM_DPICHANGED`: fontes recriadas, faixa e divisões recalculadas;
+- se um app encaixado tiver tamanho **mínimo** maior que a divisão (comum em escala alta),
+  o dock cresce sozinho para caber, até o limite de 1200 px lógicos;
+- configs antigas (chave `width`, em pixels físicos) são **migradas** automaticamente para
+  `width_logical` no primeiro start, usando o DPI atual.
+
+Para testar outra escala sem mexer no Windows:
+
+```powershell
+$env:MAYERDOCK_DPI = 144      # simula 150% (96 = 100%, 120 = 125%, 192 = 200%)
+.\dist\MayerDock\mayerdock.exe
+```
 
 ## Limitações conhecidas (MVP)
 
@@ -168,11 +244,15 @@ MayerDock\
 ├─ build.ps1        # MSVC ou GNU + MinGW, build offline + pasta portátil
 ├─ assets\
 │  ├─ icon.png      # arte de origem do ícone
-│  └─ icon.ico      # multi-tamanho, embutido no .exe
+│  ├─ icon.ico      # multi-tamanho, embutido no .exe
+│  └─ app.manifest  # DPI PerMonitorV2 + asInvoker (embutido pelo build.rs)
 ├─ installer\
-│  └─ MayerDock.iss # script do instalador (Inno Setup 6)
+│  ├─ MayerDock.iss # script do instalador (Inno Setup 6)
+│  └─ msix\         # manifesto (template), assets e build-msix.ps1
 ├─ MayerDock-Linux\ # projeto irmão (Wayland): ADR + PRD, sem código ainda
 ├─ docs\PRD.md      # PRD do produto
+├─ docs\TASKS.md    # backlog/tarefas (ex.: build MSIX para a Store)
+├─ docs\MSIX.md     # levantamento de requisitos MSIX/Store
 └─ src\
    ├─ main.rs       # entrada
    ├─ win.rs        # utilitários Win32, monitor e log
