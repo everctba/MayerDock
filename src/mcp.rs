@@ -49,6 +49,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 /// `MK_LBUTTON` (windows-sys não expõe direto no módulo de mensagens).
 const MK_LBUTTON: usize = 1;
 
+/// Contadores exibidos no HUD (cliques e capturas desta sessão).
+static mut CLICKS: u32 = 0;
+static mut CAPTURES: u32 = 0;
+
 /// `PW_RENDERFULLCONTENT` (windows-sys não expõe a constante).
 const PW_RENDERFULLCONTENT: u32 = 2;
 
@@ -210,7 +214,10 @@ fn dock_tool(tool: &str, args: Value) -> Result<Value, String> {
 fn dock_activity_if_connected(text: &str) {
     unsafe {
         if let Some(dock) = DOCK.as_mut() {
-            let _ = dock.call("activity", json!({ "text": text }));
+            let _ = dock.call(
+                "activity",
+                json!({ "text": text, "clicks": CLICKS, "captures": CAPTURES }),
+            );
         }
     }
 }
@@ -724,6 +731,10 @@ fn capture_window(args: &Value) -> Result<Vec<Value>, String> {
         png_bytes.len()
     );
     let data = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+    unsafe {
+        CAPTURES = CAPTURES.saturating_add(1);
+    }
+    dock_activity_if_connected("capturando");
     crate::win::log(&format!(
         "mcp: captura hwnd=0x{:X} {}x{} {} bytes",
         hwnd as usize,
@@ -990,6 +1001,9 @@ fn click(args: &Value) -> Result<Vec<Value>, String> {
         PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam);
         PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam);
     }
+    unsafe {
+        CLICKS = CLICKS.saturating_add(1);
+    }
     crate::win::log(&format!(
         "mcp: click hwnd=0x{:X} ({cx},{cy})",
         hwnd as usize
@@ -1196,6 +1210,7 @@ fn global_click(args: &Value) -> Result<Vec<Value>, String> {
     let y = args.get("y").and_then(Value::as_i64).ok_or("informe y")? as i32;
     dock_activity_if_connected("input global (mouse)");
     unsafe {
+        CLICKS = CLICKS.saturating_add(1);
         SetCursorPos(x, y);
         mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);

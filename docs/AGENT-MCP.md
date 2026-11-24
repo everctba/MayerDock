@@ -299,14 +299,19 @@ Validado end-to-end (dock + sidecar + Notepad): handshake, sessão no HUD, `list
 `click` + `type_text` inseriram “MayerDock agent input test” (lido por `get_text` e
 `wait_for`), **sem mover o cursor**.
 
-**Focus lease (v1) validado:** `focus_lease` abre modal (`Permitir/Negar`) no dock; ao
+**Focus lease (v2) validado:** `focus_lease` abre modal (`Permitir/Negar`) no dock; ao
 aprovar, traz a janela para foco por N s, o HUD mostra `· lease Ns` e, ao expirar, restaura
 a janela anterior. `global_click`/`global_type`/`global_key` (`SendInput`) **falham sem
 lease** e funcionam durante o lease (digitou “global lease ok” no Notepad via mouse/teclado
-reais). Para testes automatizados, `MAYERDOCK_LEASE_AUTO=1` aprova sem modal (QA).
+reais). **“Permitir sempre para este app”** grava a regra em
+`%APPDATA%\MayerDock\lease-allow.txt` (allowlist por processo, revogável apagando o
+arquivo) e há **rate limit de 3 leases/minuto**. HUD ganhou contadores (`· 2c 1s`), botão
+**■ Parar** por sessão, item “Parar agente” na bandeja e hotkey global
+**Ctrl+Alt+Shift+K**. Para testes automatizados, `MAYERDOCK_LEASE_AUTO=1` aprova sem modal
+(QA).
 
-**Próximo:** `Sempre para este app` + rate limit do lease, UIA `Invoke/SetValue`, CDP para
-browser (`md-gx2`) e HUD com `Parar tudo`/hotkey (`md-xtm`).
+**Próximo:** UIA `Invoke/SetValue`, CDP para browser (`md-gx2`), multi-agente (`md-298`) e
+empacotamento do sidecar no Inno/MSIX (`md-b8m`).
 
 ---
 

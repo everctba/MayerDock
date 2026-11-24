@@ -32,7 +32,7 @@ use windows_sys::Win32::UI::HiDpi::{
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, ReleaseCapture, SetCapture, UnregisterHotKey, MOD_ALT, MOD_CONTROL,
-    MOD_NOREPEAT,
+    MOD_NOREPEAT, MOD_SHIFT,
 };
 use windows_sys::Win32::UI::Shell::{
     SHAppBarMessage, SHQueryUserNotificationState, Shell_NotifyIconW, ABE_RIGHT, ABM_NEW,
@@ -48,12 +48,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SendMessageW, SetCursor,
     SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage,
     EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZEWE,
-    IDI_APPLICATION, IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MSG,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_CREATE, WM_DESTROY,
-    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE,
-    WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    IDI_APPLICATION, IDYES, MB_ICONQUESTION, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST,
+    MB_YESNO, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE,
+    SW_SHOWNOACTIVATE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_CREATE,
+    WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR,
+    WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use serde_json::{json, Value};
@@ -71,7 +71,9 @@ const MIN_W: i32 = 240;
 const MAX_W: i32 = 1200;
 const TIMER_TICK: usize = 1;
 const HOTKEY_ID: i32 = 1;
+const HOTKEY_STOP_ID: i32 = 2;
 const VK_M: u32 = 0x4D;
+const VK_K: u32 = 0x4B;
 
 /// Callback do AppBar (recebido na janela do dock).
 const WM_APPBAR: u32 = win::WM_APP + 10;
@@ -97,6 +99,8 @@ struct AgentInfo {
     name: String,
     activity: String,
     actions: u32,
+    clicks: u32,
+    captures: u32,
     /// PID do sidecar MCP (para o kill switch encerrar o processo).
     pid: u32,
 }
@@ -109,6 +113,8 @@ struct AgentMsg {
 
 const IDM_EXIT: usize = 101;
 const IDM_TOGGLE: usize = 102;
+/// "Parar agente" (kill switch pelo menu da bandeja).
+const IDM_STOP_AGENT: usize = 103;
 /// "Divisões: 1/2/3" → 110..112.
 const IDM_SLOTS_BASE: usize = 110;
 const IDM_SLOTS_LAST: usize = 112;
@@ -161,6 +167,8 @@ struct State {
     agent: Option<AgentInfo>,
     /// Lease de foco ativo (modal aprovado) e janela a restaurar.
     lease: Option<Lease>,
+    /// Timestamps dos pedidos de lease (rate limit de 3/min).
+    lease_requests: Vec<std::time::Instant>,
     font_title: HFONT,
     font_ui: HFONT,
     font_hint: HFONT,
@@ -251,6 +259,7 @@ impl State {
             },
             agent: None,
             lease: None,
+            lease_requests: Vec::new(),
             font_title: make_font(15, 600, scale),
             font_ui: make_font(13, 400, scale),
             font_hint: make_font(13, 400, scale),
@@ -386,6 +395,16 @@ pub fn run(cfg: Config) -> i32 {
         let hotkey = RegisterHotKey(hwnd, HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_M);
         if hotkey == 0 {
             win::log("aviso: Ctrl+Alt+M não registrado (combinação em uso?)");
+        }
+        // Parar tudo (kill switch global): Ctrl+Alt+Shift+K.
+        let stop_hotkey = RegisterHotKey(
+            hwnd,
+            HOTKEY_STOP_ID,
+            MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT,
+            VK_K,
+        );
+        if stop_hotkey == 0 {
+            win::log("aviso: Ctrl+Alt+Shift+K (parar agente) não registrado");
         }
 
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -1093,6 +1112,9 @@ fn paint(hwnd: HWND, s: &mut State) {
                         .saturating_duration_since(std::time::Instant::now());
                     text.push_str(&format!(" · lease {}s", remaining.as_secs() + 1));
                 }
+                if agent.clicks > 0 || agent.captures > 0 {
+                    text.push_str(&format!(" · {}c {}s", agent.clicks, agent.captures));
+                }
                 draw_text(
                     hdc,
                     s.font_hint,
@@ -1408,6 +1430,7 @@ fn on_menu_command(s: &mut State, id: usize) {
             PostMessageW(s.hwnd, WM_CLOSE, 0, 0);
         },
         IDM_TOGGLE => toggle_manual(s),
+        IDM_STOP_AGENT => stop_agent(s),
         IDM_SLOTS_BASE..=IDM_SLOTS_LAST => set_slot_count(s, id - IDM_SLOTS_BASE + 1),
         IDM_RELEASE_BASE..=IDM_RELEASE_LAST => release_slot(s, id - IDM_RELEASE_BASE),
         _ if id >= IDM_WINDOW_BASE => {
@@ -1483,6 +1506,34 @@ fn window_title(hwnd: HWND) -> Option<String> {
 }
 
 /// Nome do processo (sem `.exe`) dono da janela, para o menu ficar legível.
+fn lease_allow_path() -> std::path::PathBuf {
+    config::data_dir().join("lease-allow.txt")
+}
+
+fn lease_is_allowed(app: &str) -> bool {
+    if app.is_empty() {
+        return false;
+    }
+    let Ok(content) = std::fs::read_to_string(lease_allow_path()) else {
+        return false;
+    };
+    content
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case(app))
+}
+
+fn lease_allow_add(app: &str) {
+    use std::io::Write;
+    let _ = std::fs::create_dir_all(config::data_dir());
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(lease_allow_path())
+    {
+        let _ = writeln!(file, "{app}");
+    }
+}
+
 fn process_label(hwnd: HWND) -> String {
     unsafe {
         let mut pid: u32 = 0;
@@ -1937,6 +1988,8 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                 activity: "conectado".to_string(),
                 name: name.clone(),
                 actions: 0,
+                clicks: 0,
+                captures: 0,
                 pid,
             });
             win::log(&format!("agent: sessão iniciada ({name}, pid {pid})"));
@@ -1951,6 +2004,12 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
             if let Some(agent) = s.agent.as_mut() {
                 if let Some(text) = req.pointer("/args/text").and_then(Value::as_str) {
                     agent.activity = text.to_string();
+                }
+                if let Some(clicks) = req.pointer("/args/clicks").and_then(Value::as_u64) {
+                    agent.clicks = clicks.min(u32::MAX as u64) as u32;
+                }
+                if let Some(captures) = req.pointer("/args/captures").and_then(Value::as_u64) {
+                    agent.captures = captures.min(u32::MAX as u64) as u32;
                 }
             }
             ok(json!({ "ok": true }))
@@ -1967,6 +2026,16 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
             if s.lease.is_some() {
                 return err("já existe um lease de foco ativo");
             }
+            // Rate limit: no máximo 3 pedidos de lease por minuto.
+            let now = std::time::Instant::now();
+            s.lease_requests
+                .retain(|at| now.duration_since(*at).as_secs() < 60);
+            if s.lease_requests.len() >= 3 {
+                win::log("agent: lease bloqueado pelo rate limit (3/min)");
+                return err("limite de 3 leases por minuto atingido");
+            }
+            s.lease_requests.push(now);
+
             let seconds = req
                 .pointer("/args/seconds")
                 .and_then(Value::as_u64)
@@ -1977,11 +2046,14 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                 .and_then(Value::as_str)
                 .unwrap_or("testes do agente");
             let title = window_title(hwnd).unwrap_or_default();
+            let app = process_label(hwnd);
+            // "Sempre para este app": allowlist persistida em lease-allow.txt.
+            let allowed = lease_is_allowed(&app);
             // QA: MAYERDOCK_LEASE_AUTO=1 aprova sem modal (só para testes).
             let auto = std::env::var("MAYERDOCK_LEASE_AUTO")
                 .map(|value| value == "1")
                 .unwrap_or(false);
-            let granted = if auto {
+            let granted = if auto || allowed {
                 true
             } else {
                 let message = format!(
@@ -1999,6 +2071,26 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                     ) == IDYES as i32
                 }
             };
+            if granted && !auto && !allowed && !app.is_empty() {
+                let body = win::wide(&format!(
+                    "Permitir sempre para «{app}»?\n\nA regra vale para futuros leases deste \
+                     app e fica em:\n{}\n\n(apague o arquivo para revogar)",
+                    lease_allow_path().display()
+                ));
+                let caption = win::wide("MayerDock — lembrar permissão?");
+                let remember = unsafe {
+                    MessageBoxW(
+                        s.hwnd,
+                        body.as_ptr(),
+                        caption.as_ptr(),
+                        MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND,
+                    ) == IDYES as i32
+                };
+                if remember {
+                    lease_allow_add(&app);
+                    win::log(&format!("agent: lease sempre permitido para {app}"));
+                }
+            }
             if granted {
                 let previous = unsafe { GetForegroundWindow() };
                 unsafe {
@@ -2091,6 +2183,7 @@ fn cleanup(s: &mut State) {
     unsafe {
         KillTimer(s.hwnd, TIMER_TICK);
         UnregisterHotKey(s.hwnd, HOTKEY_ID);
+        UnregisterHotKey(s.hwnd, HOTKEY_STOP_ID);
         if !HOOK.is_null() {
             UnhookWinEvent(HOOK);
             HOOK = ptr::null_mut();
@@ -2183,6 +2276,13 @@ fn tray_menu(s: &mut State) {
         cmd: IDM_TOGGLE,
         kind: menu::Kind::Item,
     });
+    if let Some(agent) = &s.agent {
+        items.push(menu::MenuItem {
+            label: format!("Parar agente ({})", agent.name),
+            cmd: IDM_STOP_AGENT,
+            kind: menu::Kind::Item,
+        });
+    }
     items.push(menu::MenuItem {
         label: String::new(),
         cmd: 0,
@@ -2330,8 +2430,12 @@ unsafe extern "system" fn dock_proc(
             0
         }
         WM_HOTKEY => {
-            if wparam as i32 == HOTKEY_ID {
+            let id = wparam as i32;
+            if id == HOTKEY_ID {
                 toggle_manual(s);
+            } else if id == HOTKEY_STOP_ID && s.agent.is_some() {
+                win::log("agent: hotkey Ctrl+Alt+Shift+K (parar agente)");
+                stop_agent(s);
             }
             0
         }
