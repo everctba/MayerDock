@@ -11,17 +11,20 @@ use std::ptr;
 
 use windows_sys::core::BOOL;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    CloseHandle, GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
     InvalidateRect, SelectObject, SetBkMode, SetTextColor, UpdateWindow, CLEARTYPE_QUALITY,
-    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_LEFT, DT_NOPREFIX,
-    DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FF_DONTCARE, HDC, HFONT, OUT_DEFAULT_PRECIS,
-    PAINTSTRUCT, TRANSPARENT,
+    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
+    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FF_DONTCARE, HDC, HFONT,
+    OUT_DEFAULT_PRECIS, PAINTSTRUCT, TRANSPARENT,
 };
+use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe};
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::UI::HiDpi::{
@@ -42,15 +45,17 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageW, GetWindowLongW,
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
     IsWindow, IsWindowVisible, KillTimer, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage,
-    RegisterClassW, RegisterWindowMessageW, SetCursor, SetForegroundWindow, SetTimer, SetWindowPos,
-    ShowWindow, TranslateMessage, EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, HWND_NOTOPMOST,
-    HWND_TOPMOST, IDC_ARROW, IDC_SIZEWE, IDI_APPLICATION, MSG, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WNDCLASSW,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    RegisterClassW, RegisterWindowMessageW, SendMessageW, SetCursor, SetForegroundWindow, SetTimer,
+    SetWindowPos, ShowWindow, TranslateMessage, EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE,
+    HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZEWE, IDI_APPLICATION, MSG, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_CREATE, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE,
+    WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
+
+use serde_json::{json, Value};
 
 use crate::config::{self, Config};
 use crate::menu;
@@ -75,10 +80,31 @@ const WM_SHOWME: u32 = win::WM_APP + 30;
 const WM_FOREGROUND: u32 = win::WM_APP + 50;
 /// Eventos do ícone da bandeja.
 const WM_TRAY: u32 = win::WM_APP + 60;
+/// Pedido de agente vindo do named pipe (executado na thread da UI).
+const WM_AGENT_REQ: u32 = win::WM_APP + 70;
 
 static mut HOOK: HWINEVENTHOOK = std::ptr::null_mut();
 /// Mensagem registrada `TaskbarCreated` (enviada quando o Explorer reinicia).
 static mut TASKBAR_CREATED: u32 = 0;
+/// Handle da instância atual do pipe do agente (para o kill switch fechar).
+static mut AGENT_PIPE: HANDLE = std::ptr::null_mut();
+/// Encerra o loop do servidor de pipe (cleanup).
+static mut AGENT_STOP: bool = false;
+
+/// Sessão de agente visível no HUD do dock.
+struct AgentInfo {
+    name: String,
+    activity: String,
+    actions: u32,
+    /// PID do sidecar MCP (para o kill switch encerrar o processo).
+    pid: u32,
+}
+
+/// Pedido do pipe entregue à thread da UI via `SendMessage`.
+struct AgentMsg {
+    req: Value,
+    resp: Option<Value>,
+}
 
 const IDM_EXIT: usize = 101;
 const IDM_TOGGLE: usize = 102;
@@ -121,6 +147,10 @@ struct State {
     btn_menu: RECT,
     btn_close: RECT,
     btn_release: RECT,
+    /// Botão "Parar agente" (zeta quando não há sessão).
+    btn_stop: RECT,
+    /// Sessão de agente conectada via MCP (HUD).
+    agent: Option<AgentInfo>,
     font_title: HFONT,
     font_ui: HFONT,
     font_hint: HFONT,
@@ -203,6 +233,13 @@ impl State {
                 right: 0,
                 bottom: 0,
             },
+            btn_stop: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            agent: None,
             font_title: make_font(15, 600, scale),
             font_ui: make_font(13, 400, scale),
             font_hint: make_font(13, 400, scale),
@@ -344,6 +381,9 @@ pub fn run(cfg: Config) -> i32 {
         UpdateWindow(hwnd);
         SetTimer(hwnd, TIMER_TICK, 1000, None);
         tray_add(s);
+
+        // Named pipe do Agent Workspace (MCP): sidecar conecta e usa as tools.
+        start_agent_pipe(hwnd);
 
         // Mensagem do shell: enviada quando o Explorer reinicia (a bandeja e o
         // AppBar são perdidos nesse momento).
@@ -994,12 +1034,58 @@ fn paint(hwnd: HWND, s: &mut State) {
             right: menu_b.left - btn_gap,
             bottom: close.bottom,
         };
+        // Com sessão de agente ativa, entra o botão "Parar" (kill switch).
+        let stop = if s.agent.is_some() {
+            RECT {
+                left: release.left - btn_w - btn_gap,
+                top: close.top,
+                right: release.left - btn_gap,
+                bottom: close.bottom,
+            }
+        } else {
+            RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            }
+        };
         draw_button(hdc, s.font_ui, &release, "←", any_slot_occupied(s));
         draw_button(hdc, s.font_ui, &menu_b, "☰", true);
         draw_button(hdc, s.font_ui, &close, "✕", true);
+        if stop.right > stop.left {
+            draw_button(hdc, s.font_ui, &stop, "■", true);
+        }
         s.btn_menu = menu_b;
         s.btn_close = close;
         s.btn_release = release;
+        s.btn_stop = stop;
+
+        // HUD do agente no cabeçalho (nome + atividade atual).
+        if let Some(agent) = &s.agent {
+            let hud_right = if stop.right > stop.left {
+                stop.left
+            } else {
+                release.left
+            };
+            let hud = RECT {
+                left: px(s, 118),
+                top: 0,
+                right: hud_right - px(s, 8),
+                bottom: header_h,
+            };
+            if hud.right > hud.left + px(s, 40) {
+                let text = format!("● {} · {}", agent.name, agent.activity);
+                draw_text(
+                    hdc,
+                    s.font_hint,
+                    rgb(126, 186, 255),
+                    &text,
+                    &mut { hud },
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+                );
+            }
+        }
 
         // Separadores entre as divisões verticais.
         if s.slot_count > 1 {
@@ -1126,6 +1212,10 @@ fn on_lbutton_up(s: &mut State, lparam: LPARAM) {
 
     let (x, y) = client_point(lparam);
     if y < px(s, HEADER_H) {
+        if point_in(&s.btn_stop, x, y) {
+            stop_agent(s);
+            return;
+        }
         if point_in(&s.btn_close, x, y) {
             unsafe {
                 PostMessageW(s.hwnd, WM_CLOSE, 0, 0);
@@ -1499,6 +1589,385 @@ pub fn print_status() {
     win::console_print(&out);
 }
 
+// ---------------------------------------------------------------------------
+// Agent Workspace — servidor do named pipe (sidecar MCP ↔ dock)
+// ---------------------------------------------------------------------------
+
+/// Nome do pipe usado pelo sidecar MCP (`\\.\pipe\MayerDock.Agent`).
+const AGENT_PIPE_NAME: &str = r"\\.\pipe\MayerDock.Agent";
+
+fn agent_pipe_close() {
+    unsafe {
+        if !AGENT_PIPE.is_null() {
+            CloseHandle(AGENT_PIPE);
+            AGENT_PIPE = ptr::null_mut();
+        }
+    }
+}
+
+/// Token local do pipe (protege contra outro usuário/processo se conectar).
+fn make_agent_token() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let stack = &now as *const _ as usize;
+    format!(
+        "{:016x}{:016x}{:08x}",
+        now as u64,
+        (now >> 64) as u64,
+        pid ^ (stack as u32)
+    )
+}
+
+/// Sobe o servidor do pipe numa thread; escreve o token para o sidecar ler.
+fn start_agent_pipe(hwnd: HWND) {
+    let token = make_agent_token();
+    let dir = config::data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let token_path = dir.join("agent-token");
+    match std::fs::write(&token_path, &token) {
+        Ok(_) => win::log(&format!(
+            "agent pipe: pronto (token em {})",
+            token_path.display()
+        )),
+        Err(err) => win::log(&format!("agent pipe: falhou escrever token: {err}")),
+    }
+    let raw_hwnd = hwnd as usize;
+    std::thread::spawn(move || agent_pipe_loop(raw_hwnd as HWND, token));
+}
+
+fn agent_pipe_loop(hwnd: HWND, token: String) {
+    let name = win::wide(AGENT_PIPE_NAME);
+    loop {
+        unsafe {
+            if AGENT_STOP {
+                win::log("agent pipe: servidor encerrado");
+                return;
+            }
+            let pipe = CreateNamedPipeW(
+                name.as_ptr(),
+                0x0000_0003, // PIPE_ACCESS_DUPLEX
+                0,           // PIPE_TYPE_BYTE | READMODE_BYTE | WAIT
+                1,           // uma instância (um agente por vez)
+                65536,
+                65536,
+                0,
+                ptr::null(),
+            );
+            if pipe.is_null() || pipe as isize == -1 {
+                win::log("agent pipe: CreateNamedPipeW falhou");
+                return;
+            }
+            AGENT_PIPE = pipe;
+            let connected = ConnectNamedPipe(pipe, ptr::null_mut());
+            if AGENT_STOP {
+                return;
+            }
+            // 535 = ERROR_PIPE_CONNECTED: cliente conectou antes do ConnectNamedPipe.
+            if connected == 0 && GetLastError() != 535 {
+                if AGENT_PIPE == pipe {
+                    CloseHandle(pipe);
+                    AGENT_PIPE = ptr::null_mut();
+                }
+                continue;
+            }
+            win::log("agent pipe: cliente conectado");
+            serve_agent(pipe, hwnd, &token);
+            if AGENT_PIPE == pipe {
+                AGENT_PIPE = ptr::null_mut();
+                DisconnectNamedPipe(pipe);
+                CloseHandle(pipe);
+            }
+            win::log("agent pipe: cliente desconectado");
+        }
+    }
+}
+
+fn serve_agent(pipe: HANDLE, hwnd: HWND, token: &str) {
+    let mut authenticated = false;
+    loop {
+        let Some(line) = read_pipe_line(pipe) else {
+            return;
+        };
+        let req: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(_) => {
+                if write_pipe_line(
+                    pipe,
+                    &json!({ "id": 0, "ok": false, "error": "JSON inválido" }),
+                )
+                .is_none()
+                {
+                    return;
+                }
+                continue;
+            }
+        };
+        let id = req.get("id").cloned().unwrap_or(json!(0));
+        let tool = req.get("tool").and_then(Value::as_str).unwrap_or("");
+
+        if tool == "auth" {
+            let ok = req
+                .pointer("/args/token")
+                .and_then(Value::as_str)
+                .map(|value| value == token)
+                .unwrap_or(false);
+            let resp = if ok {
+                json!({ "id": id, "ok": true, "result": { "ok": true } })
+            } else {
+                json!({ "id": id, "ok": false, "error": "token inválido" })
+            };
+            if write_pipe_line(pipe, &resp).is_none() {
+                return;
+            }
+            if !ok {
+                return;
+            }
+            authenticated = true;
+            continue;
+        }
+        if !authenticated {
+            if write_pipe_line(
+                pipe,
+                &json!({ "id": id, "ok": false, "error": "não autenticado" }),
+            )
+            .is_none()
+            {
+                return;
+            }
+            continue;
+        }
+
+        let mut msg = AgentMsg {
+            req: req.clone(),
+            resp: None,
+        };
+        unsafe {
+            SendMessageW(hwnd, WM_AGENT_REQ, &mut msg as *mut AgentMsg as WPARAM, 0);
+        }
+        let result = msg
+            .resp
+            .unwrap_or_else(|| json!({ "ok": false, "error": "sem resposta da UI" }));
+        let resp = match result.get("ok").and_then(Value::as_bool) {
+            Some(true) => {
+                json!({ "id": id, "ok": true, "result": result.get("result").cloned().unwrap_or(Value::Null) })
+            }
+            _ => json!({
+                "id": id,
+                "ok": false,
+                "error": result.get("error").and_then(Value::as_str).unwrap_or("erro")
+            }),
+        };
+        if write_pipe_line(pipe, &resp).is_none() {
+            return;
+        }
+    }
+}
+
+fn read_pipe_line(pipe: HANDLE) -> Option<String> {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 1];
+    loop {
+        let mut read: u32 = 0;
+        let ok = unsafe {
+            ReadFile(
+                pipe,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                &mut read,
+                ptr::null_mut(),
+            )
+        };
+        if ok == 0 || read == 0 {
+            return None;
+        }
+        if buf[0] == b'\n' {
+            break;
+        }
+        if buf[0] != b'\r' {
+            bytes.push(buf[0]);
+        }
+        if bytes.len() > 1 << 20 {
+            return None;
+        }
+    }
+    Some(String::from_utf8_lossy(&bytes).to_string())
+}
+
+fn write_pipe_line(pipe: HANDLE, value: &Value) -> Option<()> {
+    let mut line = serde_json::to_string(value).ok()?;
+    line.push('\n');
+    let bytes = line.as_bytes();
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        let chunk = &bytes[offset..];
+        let mut written: u32 = 0;
+        let ok = unsafe {
+            WriteFile(
+                pipe,
+                chunk.as_ptr(),
+                chunk.len() as u32,
+                &mut written,
+                ptr::null_mut(),
+            )
+        };
+        if ok == 0 || written == 0 {
+            return None;
+        }
+        offset += written as usize;
+    }
+    Some(())
+}
+
+fn slots_json(s: &State) -> Value {
+    let mut items = Vec::new();
+    for index in 0..s.slot_count {
+        let rect = slot_rect(s, index);
+        match &s.slots[index] {
+            Some(slot) => {
+                let title = window_title(slot.hwnd).unwrap_or_default();
+                items.push(json!({
+                    "index": index,
+                    "occupied": true,
+                    "hwnd": slot.hwnd as usize,
+                    "title": title,
+                    "rect": { "left": rect.left, "top": rect.top, "right": rect.right, "bottom": rect.bottom }
+                }));
+            }
+            None => items.push(json!({ "index": index, "occupied": false })),
+        }
+    }
+    json!(items)
+}
+
+/// Executa um pedido do agente na thread da UI (chamado via `WM_AGENT_REQ`).
+fn handle_agent_request(s: &mut State, req: &Value) -> Value {
+    let tool = req.get("tool").and_then(Value::as_str).unwrap_or("");
+    if let Some(agent) = s.agent.as_mut() {
+        let label = match tool {
+            "list_slots" => "lendo slots",
+            "dock_pin" => "encaixando janela",
+            "dock_unpin" => "liberando janela",
+            "dock_release_all" => "liberando janelas",
+            "status" => "consultando dock",
+            "session_hello" => "conectando",
+            other => other,
+        };
+        agent.activity = label.to_string();
+        agent.actions = agent.actions.saturating_add(1);
+    }
+    unsafe {
+        InvalidateRect(s.hwnd, ptr::null(), 0);
+    }
+
+    let ok = |value: Value| json!({ "ok": true, "result": value });
+    let err = |message: &str| json!({ "ok": false, "error": message });
+
+    match tool {
+        "status" => ok(json!({
+            "width_logical": s.width,
+            "slots": s.slot_count,
+            "docked": s.slots.iter().flatten().count(),
+            "agent": s.agent.as_ref().map(|agent| json!({
+                "name": agent.name,
+                "activity": agent.activity,
+                "actions": agent.actions
+            }))
+        })),
+        "list_slots" => ok(slots_json(s)),
+        "dock_pin" => match req.pointer("/args/hwnd").and_then(Value::as_i64) {
+            Some(raw) => {
+                let hwnd = raw as usize as HWND;
+                let pinned = pin_first_free(s, hwnd);
+                ok(json!({ "pinned": pinned }))
+            }
+            None => err("informe args.hwnd"),
+        },
+        "dock_unpin" => match req.pointer("/args/hwnd").and_then(Value::as_i64) {
+            Some(raw) => {
+                let hwnd = raw as usize as HWND;
+                let index = s
+                    .slots
+                    .iter()
+                    .position(|slot| slot.as_ref().map(|s| s.hwnd) == Some(hwnd));
+                if let Some(index) = index {
+                    release_slot(s, index);
+                    ok(json!({ "released": true, "index": index }))
+                } else {
+                    ok(json!({ "released": false }))
+                }
+            }
+            None => err("informe args.hwnd"),
+        },
+        "dock_release_all" => {
+            let count = s.slots.iter().flatten().count();
+            release_all(s);
+            ok(json!({ "released": count }))
+        }
+        "session_hello" => {
+            let name = req
+                .pointer("/args/name")
+                .and_then(Value::as_str)
+                .unwrap_or("agente")
+                .to_string();
+            let pid = req
+                .pointer("/args/pid")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+            s.agent = Some(AgentInfo {
+                activity: "conectado".to_string(),
+                name: name.clone(),
+                actions: 0,
+                pid,
+            });
+            win::log(&format!("agent: sessão iniciada ({name}, pid {pid})"));
+            ok(json!({ "session": name }))
+        }
+        "session_bye" => {
+            s.agent = None;
+            win::log("agent: sessão encerrada");
+            ok(json!({ "bye": true }))
+        }
+        "activity" => {
+            if let Some(agent) = s.agent.as_mut() {
+                if let Some(text) = req.pointer("/args/text").and_then(Value::as_str) {
+                    agent.activity = text.to_string();
+                }
+            }
+            ok(json!({ "ok": true }))
+        }
+        other => err(&format!("tool desconhecida: {other}")),
+    }
+}
+
+/// Kill switch: encerra a sessão e derruba a conexão do pipe.
+fn stop_agent(s: &mut State) {
+    // Kill switch: encerra o processo do sidecar (o harness vê o MCP cair) e
+    // derruba a conexão do pipe. Sem pid (ex.: sessão antiga), só desconecta.
+    let pid = s.agent.as_ref().map(|agent| agent.pid).unwrap_or(0);
+    win::log(&format!(
+        "agent: kill switch (Parar) — encerrando sidecar pid {pid}"
+    ));
+    if pid != 0 {
+        unsafe {
+            let process = OpenProcess(0x0001, 0, pid); // PROCESS_TERMINATE
+            if !process.is_null() {
+                TerminateProcess(process, 1);
+                CloseHandle(process);
+            } else {
+                win::log("agent: não abri o processo do sidecar para terminar");
+            }
+        }
+    }
+    s.agent = None;
+    agent_pipe_close();
+    unsafe {
+        InvalidateRect(s.hwnd, ptr::null(), 0);
+    }
+}
+
 fn cleanup(s: &mut State) {
     unsafe {
         KillTimer(s.hwnd, TIMER_TICK);
@@ -1507,10 +1976,15 @@ fn cleanup(s: &mut State) {
             UnhookWinEvent(HOOK);
             HOOK = ptr::null_mut();
         }
+        // Encerra o servidor do pipe de agentes (unblock do ConnectNamedPipe).
+        AGENT_STOP = true;
+        agent_pipe_close();
     }
+    s.agent = None;
     release_all(s);
     remove_appbar(s);
     tray_remove(s);
+    let _ = std::fs::remove_file(config::data_dir().join("agent-token"));
     Config {
         width: s.width,
         slots: s.slot_count,
@@ -1658,6 +2132,17 @@ unsafe extern "system" fn dock_proc(
     // O Explorer reiniciou: bandeja e AppBar precisam ser re-registrados.
     if TASKBAR_CREATED != 0 && msg == TASKBAR_CREATED {
         shell_restart(s);
+        return 0;
+    }
+
+    // Pedido do sidecar MCP: executa na thread da UI e devolve a resposta.
+    if msg == WM_AGENT_REQ {
+        let msg_ptr = wparam as *mut AgentMsg;
+        if !msg_ptr.is_null() {
+            let request = (*msg_ptr).req.clone();
+            let resp = handle_agent_request(s, &request);
+            (*msg_ptr).resp = Some(resp);
+        }
         return 0;
     }
 

@@ -1,20 +1,24 @@
-//! Sidecar **MCP** (Model Context Protocol) do MayerDock — protótipo da v1.5.
+//! Sidecar **MCP** (Model Context Protocol) do MayerDock — v1.5.
 //!
 //! Modo de uso: `mayerdock.exe --mcp` (servidor MCP sobre stdio, JSON-RPC 2.0,
 //! uma mensagem JSON por linha).
 //!
-//! Esta primeira fatia é **standalone** (não conversa com o dock ainda):
-//! expõe inventário de janelas, captura de janela específica (PrintWindow/WGC),
-//! abertura de app e estado de janela. O próximo passo é o named pipe com o
-//! dock para slots/HUD/lease.
+//! Duas camadas:
+//! - **standalone**: inventário de janelas, captura de janela, abertura de app e
+//!   estado de janela (funciona sem o dock);
+//! - **dock** (named pipe `\\.\pipe\MayerDock.Agent` + token): `list_slots`,
+//!   `dock_pin`, `dock_unpin`, `dock_release_all`, sessão/HUD no dock.
 //!
 //! Regras do guia embutido (entregue ao agente em `initialize`):
 //! - preferir dados estruturados (árvore/lista) a pixels;
-//! - nunca usar input global (nesta fatia não há input);
-//! - capturar só a janela alvo, nunca a tela inteira.
+//! - capturar só a janela alvo, nunca a tela inteira;
+//! - sem input global nesta fatia (UIA/CDP entram na próxima).
+
+#![allow(static_mut_refs)]
 
 use std::ffi::c_void;
-use std::io::{BufRead, Write};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -74,8 +78,123 @@ pub fn serve(version: &str) -> i32 {
             let _ = stdout.flush();
         }
     }
+    dock_bye();
     crate::win::log("mcp: sidecar encerrado");
     0
+}
+
+// ---------------------------------------------------------------------------
+// Cliente do dock (named pipe + token + sessão)
+// ---------------------------------------------------------------------------
+
+struct Dock {
+    writer: File,
+    reader: BufReader<File>,
+    next_id: u64,
+}
+
+static mut DOCK: Option<Dock> = None;
+
+impl Dock {
+    fn connect() -> Result<Dock, String> {
+        let token_path = crate::config::data_dir().join("agent-token");
+        let token = std::fs::read_to_string(&token_path).map_err(|_| {
+            "dock não está rodando (agent-token ausente); abra o MayerDock".to_string()
+        })?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(r"\\.\pipe\MayerDock.Agent")
+            .map_err(|err| format!("não conectei no pipe do dock: {err}"))?;
+        let reader = BufReader::new(
+            file.try_clone()
+                .map_err(|err| format!("pipe clone: {err}"))?,
+        );
+        let mut dock = Dock {
+            writer: file,
+            reader,
+            next_id: 0,
+        };
+        let auth = dock.call("auth", json!({ "token": token.trim() }))?;
+        if auth.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err("token do dock inválido".to_string());
+        }
+        crate::win::log("mcp: conectado ao dock (pipe autenticado)");
+        Ok(dock)
+    }
+
+    fn call(&mut self, tool: &str, args: Value) -> Result<Value, String> {
+        self.next_id += 1;
+        let id = self.next_id;
+        let mut line = serde_json::to_string(&json!({ "id": id, "tool": tool, "args": args }))
+            .map_err(|err| err.to_string())?;
+        line.push('\n');
+        self.writer
+            .write_all(line.as_bytes())
+            .map_err(|err| format!("pipe write: {err}"))?;
+        self.writer
+            .flush()
+            .map_err(|err| format!("pipe flush: {err}"))?;
+
+        let mut buffer = String::new();
+        let read = match self.reader.read_line(&mut buffer) {
+            Ok(read) => read,
+            // Pipe quebrado = dock fechou/Parar (kill switch): encerra o sidecar,
+            // o harness vê o servidor MCP cair e o agente para.
+            Err(err) => {
+                crate::win::log(&format!(
+                    "mcp: pipe do dock fechou ({err}) — encerrando sidecar (kill switch?)"
+                ));
+                std::process::exit(0);
+            }
+        };
+        if read == 0 {
+            crate::win::log("mcp: dock fechou a conexão (kill switch?) — encerrando sidecar");
+            std::process::exit(0);
+        }
+        let response: Value = serde_json::from_str(buffer.trim())
+            .map_err(|err| format!("pipe JSON inválido: {err}"))?;
+        if response.get("ok").and_then(Value::as_bool) == Some(true) {
+            Ok(response.get("result").cloned().unwrap_or(Value::Null))
+        } else {
+            Err(response
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("erro do dock")
+                .to_string())
+        }
+    }
+}
+
+fn dock() -> Result<&'static mut Dock, String> {
+    unsafe {
+        if DOCK.is_none() {
+            DOCK = Some(Dock::connect()?);
+        }
+        Ok(DOCK.as_mut().expect("dock conectado"))
+    }
+}
+
+fn dock_session(name: &str) {
+    if let Ok(dock) = dock() {
+        let _ = dock.call(
+            "session_hello",
+            json!({ "name": name, "pid": std::process::id() }),
+        );
+    }
+}
+
+fn dock_bye() {
+    unsafe {
+        if let Some(dock) = DOCK.as_mut() {
+            let _ = dock.call("session_bye", json!({}));
+        }
+    }
+}
+
+/// Executa uma tool no dock (erro legível quando o dock não está aberto).
+fn dock_tool(tool: &str, args: Value) -> Result<Value, String> {
+    dock()?.call(tool, args)
 }
 
 fn handle(message: &Value, version: &str, _initialized: &mut bool) -> Value {
@@ -96,16 +215,25 @@ fn handle(message: &Value, version: &str, _initialized: &mut bool) -> Value {
                 "2024-11-05" | "2025-03-26" | "2025-06-18" => requested,
                 _ => "2024-11-05",
             };
+            // Sessão para o HUD do dock (silencioso se o dock não estiver aberto).
+            let client_name = params
+                .pointer("/clientInfo/name")
+                .and_then(Value::as_str)
+                .unwrap_or("agente")
+                .to_string();
+            dock_session(&client_name);
             result(
                 id,
                 json!({
                     "protocolVersion": protocol,
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "mayerdock-mcp", "version": version },
-                    "instructions": "MayerDock agent workspace (protótipo). Prefira dados \
-                        estruturados (list_windows/capture_window) a screenshots da tela \
-                        inteira. Capture somente a janela alvo. Não há input global nesta \
-                        versão; tools de input/lease entram na próxima fatia (dock + pipe)."
+                    "instructions": "MayerDock agent workspace. Prefira dados estruturados \
+                        (list_windows/list_slots) a screenshots. Capture somente a janela \
+                        alvo. Use list_slots/dock_pin para encaixar janelas no dock sem \
+                        roubar foco. Não há input global nesta versão (UIA/CDP na próxima); \
+                        se o dock estiver aberto, a sessão aparece no HUD e o botão Parar \
+                        encerra este sidecar."
                 }),
             )
         }
@@ -194,6 +322,38 @@ fn tools() -> Value {
                 "required": ["action"],
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "list_slots",
+            "description": "Lista os slots do dock (índice, ocupado, hwnd, título, retângulo). \
+                Requer o MayerDock aberto.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        },
+        {
+            "name": "dock_pin",
+            "description": "Encaixa uma janela existente no primeiro slot livre do dock, sem \
+                ativá-la. Requer hwnd de list_windows.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "hwnd": { "type": "integer" } },
+                "required": ["hwnd"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "dock_unpin",
+            "description": "Libera a janela de um slot (volta ao lugar/tamanho original).",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "hwnd": { "type": "integer" } },
+                "required": ["hwnd"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "dock_release_all",
+            "description": "Libera todas as janelas encaixadas no dock.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }
     ])
 }
@@ -202,9 +362,16 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
     match name {
         "status" => {
             let windows = list_windows();
+            let dock_info = match dock() {
+                Ok(dock) => dock
+                    .call("status", json!({}))
+                    .ok()
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "erro ao consultar".to_string()),
+                Err(_) => "offline (abra o MayerDock para slots/HUD)".to_string(),
+            };
             let text = format!(
-                "mayerdock-mcp {} (standalone)\r\npid: {}\r\njanelas visíveis: {}\r\n\
-                 modo: protótipo (dock ainda não conectado; sem slots/HUD/lease)",
+                "mayerdock-mcp {}\r\npid: {}\r\njanelas visíveis: {}\r\ndock: {dock_info}",
                 env!("CARGO_PKG_VERSION"),
                 std::process::id(),
                 windows.len()
@@ -238,12 +405,40 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
         "capture_window" => capture_window(args),
         "open_app" => open_app(args),
         "window_state" => window_state(args),
+        "list_slots" => {
+            let slots = dock_tool("list_slots", json!({}))?;
+            Ok(vec![text_content(&pretty(&slots))])
+        }
+        "dock_pin" => {
+            let hwnd = args
+                .get("hwnd")
+                .and_then(Value::as_i64)
+                .ok_or("informe hwnd")?;
+            let result = dock_tool("dock_pin", json!({ "hwnd": hwnd }))?;
+            Ok(vec![text_content(&pretty(&result))])
+        }
+        "dock_unpin" => {
+            let hwnd = args
+                .get("hwnd")
+                .and_then(Value::as_i64)
+                .ok_or("informe hwnd")?;
+            let result = dock_tool("dock_unpin", json!({ "hwnd": hwnd }))?;
+            Ok(vec![text_content(&pretty(&result))])
+        }
+        "dock_release_all" => {
+            let result = dock_tool("dock_release_all", json!({}))?;
+            Ok(vec![text_content(&pretty(&result))])
+        }
         _ => Err(format!("tool desconhecida: {name}")),
     }
 }
 
 fn text_content(text: &str) -> Value {
     json!({ "type": "text", "text": text })
+}
+
+fn pretty(value: &Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +700,7 @@ fn open_app(args: &Value) -> Result<Vec<Value>, String> {
     }
     crate::win::log(&format!("mcp: open_app {path} {arguments}"));
     Ok(vec![text_content(&format!(
-        "aberto sem ativar: {path} {arguments} (encaixe em slot do dock entra na próxima fatia)"
+        "aberto sem ativar: {path} {arguments}. Use list_windows + dock_pin(hwnd) para encaixar no dock."
     ))])
 }
 

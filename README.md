@@ -112,22 +112,26 @@ log: C:\Users\...\AppData\Roaming\MayerDock\mayerdock.log
 No modo **MSIX** (`packaged: true`, com `package:` também), esses caminhos são os da
 **área do pacote** (redirecionada pelo Windows) — é o endereço real para achar config/log.
 
-## MCP (protótipo, v1.5)
+## MCP (v1.5 — Agent Workspace)
 
 `mayerdock.exe --mcp` sobe um servidor **MCP stdio** (JSON-RPC 2.0, uma mensagem por linha)
-que harnesses compatíveis (Claude Code, Cursor, DSH) consomem. Hoje é a **primeira fatia,
-standalone** (ainda sem slots/HUD/lease do dock):
+que harnesses compatíveis (Claude Code, Cursor, DSH) consomem. Integra com o dock via
+**named pipe** (`\\.\pipe\MayerDock.Agent`) autenticado por token:
 
 | Tool | Função |
 | --- | --- |
-| `status` | Versão, PID e resumo do ambiente |
+| `status` | Versão, PID, janelas e estado do dock/sessão |
 | `list_windows` | Janelas visíveis (título, classe, PID, retângulo, DPI) |
 | `capture_window` | PNG de **uma** janela (por `hwnd` ou `title`), sem mover o cursor |
 | `open_app` | Abre um app **sem ativar** (`ShellExecute` + `SW_SHOWNOACTIVATE`) |
 | `window_state` | Maximiza/minimiza/restaura/fecha sem trazer para frente |
+| `list_slots` | Slots do dock (ocupado, hwnd, título, retângulo) — requer o dock aberto |
+| `dock_pin` | Encaixa a janela em um slot do dock **sem ativar** |
+| `dock_unpin` / `dock_release_all` | Libera a janela/ todas as janelas do dock |
 
-Capturas em `%APPDATA%\MayerDock\agent\<pid>\cap-<timestamp>.png`; o retorno inclui
-caminho, dimensões, DPI e a imagem em base64 (MCP image).
+Com o dock aberto, a sessão aparece no **HUD** (`● Claude · lendo slots`) e o botão
+**■ Parar** encerra o sidecar (kill switch). Capturas em
+`%APPDATA%\MayerDock\agent\<pid>\cap-<timestamp>.png` (caminho, DPI e imagem base64).
 
 Config de exemplo:
 
@@ -142,8 +146,8 @@ Config de exemplo:
 }
 ```
 
-Próxima fatia: named pipe com o dock (slots, HUD, `focus_lease`) e input direcionado
-(UIA/CDP). Detalhes em [docs/AGENT-MCP.md](docs/AGENT-MCP.md).
+Próxima fatia: input direcionado (UIA/CDP) e **focus lease** com modal de aprovação.
+Detalhes em [docs/AGENT-MCP.md](docs/AGENT-MCP.md).
 
 ## Instalador
 

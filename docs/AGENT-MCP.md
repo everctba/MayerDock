@@ -271,22 +271,30 @@ No cabeçalho do slot/janela do agente (e no topo do dock quando em execução):
 
 ---
 
-## 14.1 Estado da implementação (protótipo, 2026-11-24)
+## 14.1 Estado da implementação (2026-11-24)
 
-Implementado em `src/mcp.rs` (`mayerdock.exe --mcp`), **standalone** (sem dock ainda):
+Implementado:
 
-- servidor MCP **stdio** (initialize/ping/tools/list/tools/call) com guia embutido
-  (preferir dados estruturados; não capturar a tela inteira);
-- tools: `status`, `list_windows`, `capture_window` (PrintWindow
+- **sidecar MCP stdio** (`mayerdock.exe --mcp`): initialize/ping/tools/list/tools/call,
+  guia embutido e sessão enviada ao dock;
+- **dock bridge**: named pipe `\\.\pipe\MayerDock.Agent` com **token** por execução
+  (`%APPDATA%\MayerDock\agent-token`), comandos executados na thread da UI via
+  `SendMessage`; uma conexão (um agente) por vez;
+- tools standalone: `status`, `list_windows`, `capture_window` (PrintWindow
   `PW_RENDERFULLCONTENT` + fallback BitBlt → PNG RGBA, DPI no retorno), `open_app`
-  (`ShellExecute` + `SW_SHOWNOACTIVATE`), `window_state`;
+  (`SW_SHOWNOACTIVATE`), `window_state`;
+- tools do dock: `list_slots`, `dock_pin` (encaixa sem ativar), `dock_unpin`,
+  `dock_release_all`;
+- **HUD**: no cabeçalho do dock, `● <agente> · <atividade>` e botão **■ Parar**
+  (kill switch) que encerra o processo do sidecar e derruba a sessão;
 - capturas em `%APPDATA%\MayerDock\agent\<pid>\cap-*.png`; log no `mayerdock.log`.
 
-Validado por cliente stdio de teste: handshake, 5 tools, 9 janelas listadas, captura do
-Notepad (1230×873 RGBA) e fechamento sem foco.
+Validado end-to-end (dock + sidecar + Notepad): handshake, sessão no HUD, `list_slots`,
+`open_app`, `dock_pin` (janela 704×517 no slot), captura PNG, `dock_release_all` e
+**kill switch encerrando o sidecar**.
 
-**Próximo:** named pipe + token com o dock (task `md-7m5`), slots/HUD/lease
-(`md-xtm`/`md-xc6`) e input UIA/CDP (`md-11c`/`md-gx2`).
+**Próximo:** input direcionado (UIA `Invoke/SetValue`, PostMessage e CDP para browser),
+`accessibility_tree`/`wait_for` e **focus lease** com modal de aprovação (`md-xc6`).
 
 ---
 
