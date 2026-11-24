@@ -93,3 +93,54 @@ estar pronta.
 | SDK do Windows ausente na máquina de build | Script detecta e orienta a instalação; não bloqueia o build atual |
 | Identidade da Store muda o `Identity` | Só fixar o `Identity` após reservar o nome no Partner Center |
 | Atualização automática da Store substituir a versão portátil | São produtos distintos (MSIX vs instalador/portátil); documentar |
+
+---
+
+## T-002 — Fuzzing do MayerDock (MCP/JSON, named pipe, config.ini, CLI, captura)
+
+- **Status:** pendente (backlog) · **Prioridade:** P2 · **Task no beads:** `md-d33.1`
+- **Objetivo:** fuzzar as superfícies que recebem dados **não confiáveis** para encontrar
+  panics, crashes, DoS e uso descontrolado de memória — sem quebrar os builds atuais.
+
+### Alvos (ordem de risco)
+
+1. **MCP stdio** (`src/mcp.rs`): JSON malformado, linhas > 1 MB, tipos errados, `id`
+   ausente/duplicado, unicode inválido, aninhamento profundo, `tools/call` com
+   `arguments` absurdos (`hwnd` inválido, `text` gigante, `title` com `%`/NUL).
+2. **Named pipe do dock** (`src/dock.rs`): auth sem token/errado/gigante, request sem
+   JSON, linha sem `\n`, payload > 1 MB, desconexão no meio, requests fora de ordem,
+   `WM_AGENT_REQ` malformado, sessão sem `pid`.
+3. **config.ini** (`src/config.rs`): chaves desconhecidas, `width` em `i32::MIN/MAX`,
+   `slots` 0/999, `legacy_width` negativo, linha truncada, CRLF/LF/BOM, unicode.
+4. **CLI/env:** `--mcp`/`--status`/`--version` com args extras, `MAYERDOCK_DPI` com
+   0/99999/negativo/texto, `MAYERDOCK_LEASE_AUTO` com valores estranhos.
+5. **Captura/PNG:** `hwnd` inválido/destruído no meio, janela 0×0, `GetDIBits` falhando,
+   dimensões negativas/gigantes — nenhum panic pode derrubar dock/sidecar.
+
+### Estratégia
+
+- Extrair os **parsers puros** (MCP/pipe/config/CLI) para módulos testáveis.
+- Harness de fuzz: `cargo-fuzz`/libFuzzer se houver toolchain MSVC e rede para
+  `libfuzzer-sys`; alternativas: `cargo-afl` em WSL, `honggfuzz`, ou harness Rust com
+  corpus + geração aleatória via `std` (o cache offline atual só tem windows-sys,
+  serde_json, base64, png).
+- Corpus inicial: mensagens MCP reais, configs reais e linhas de pipe; artefatos em
+  `target/fuzz-artifacts` (ignorado no git).
+
+### Critérios de aceite
+
+- [ ] ≥ 3 alvos (`mcp_json`, `pipe_line`, `config_ini`) compilando e rodando com comando
+      documentado.
+- [ ] 10 min por alvo sem panic/abort/stack overflow e com RSS limitado (ex.: ≤ 200 MB).
+- [ ] Mensagens > 1 MB e JSON com aninhamento profundo são rejeitadas sem travar
+      dock/sidecar.
+- [ ] Cada crash/DoS encontrado vira bug no beads com repro minimizado e correção.
+- [ ] `docs/TASKS.md` e `docs/AGENT-MCP.md` atualizados com como rodar e corpus.
+- [ ] Builds portátil, Inno e MSIX continuam passando após extrair os módulos.
+
+### Notas e riscos
+
+- Rodar com dock isolado e usuário idle; **nunca** fuzzar input global sem lease.
+- Não capturar janelas de terceiros além das abertas pelo próprio teste.
+- `cargo-fuzz` não funciona no toolchain GNU/offline desta máquina — documentar a
+  alternativa usada e não bloquear o build atual.
