@@ -4,6 +4,15 @@ Tarefas futuras que **não** devem quebrar o que já funciona. O instalador atua
 (Inno Setup, `build.ps1 -Installer`) é o caminho oficial de distribuição até a Store
 estar pronta.
 
+> **Backlog vivo no beads (`bd`):** as epics/tasks da próxima versão estão na base local.
+> Use `bd list`, `bd ready`, `bd show <id>`.
+>
+> - **Marco atual:** v0.1.0 — DPI + MSIX F1/F2 (`md-ab7`).
+> - **Marco v1.5:** Agent Workspace (`md-d33`).
+> - **Epics v1.5:** Agent Workspace MCP (`md-jcf`) · Marketing/landing & Store (`md-o2l`)
+>   · Release & versões (`md-9x9`).
+> - Produto/arquitetura do Agent MCP: [AGENT-MCP.md](AGENT-MCP.md).
+
 ---
 
 ## T-001 — Build MSIX para Microsoft Store (em paralelo ao instalador atual)

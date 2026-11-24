@@ -94,6 +94,11 @@ reorganizar janelas a cada maximizada.
 
 - **P1:** dock à esquerda,
   escolher monitor, atalhos para "encaixar janela em foco".
+- **P1 — v1.5 Agent Workspace (MCP):** dar um workspace aos agentes de IA (Claude
+  Code/Cursor/DSH) sem roubar mouse/foco: MCP stdio, slots, captura direcionada (WGC),
+  input via UIA/CDP, **focus lease com modal de aprovação**, **HUD + kill switch** no dock
+  e browser headed anti-throttle (WebGPU/WebGL2). Produto em [AGENT-MCP.md](AGENT-MCP.md);
+  epics/tasks no beads (`bd list`).
 - **P2:** perfis salvos por app, divisões desiguais (redimensionar a divisória), modo
   "reservar metade morta da TV", auto-hide do dock, tema claro.
 - **P2 — build MSIX / Microsoft Store:** empacotar como MSIX (`runFullTrust`), manter o

@@ -5,6 +5,9 @@ barra de tarefas) e **encaixa janelas** de outras aplicações nessa faixa — a
 empilhadas verticalmente** — mantendo um painel fixo sempre visível ao lado do trabalho.
 
 Status: **0.1.0 — MVP funcional**. Detalhes de produto em [docs/PRD.md](docs/PRD.md).
+Próxima versão (**1.5**): **Agent Workspace** — o dock como workspace de agentes de IA
+(MCP stdio, captura direcionada, HUD + kill switch, focus lease) em
+[docs/AGENT-MCP.md](docs/AGENT-MCP.md).
 
 > **Linux/Wayland:** existe um projeto separado em [MayerDock-Linux](MayerDock-Linux/README.md)
 > — decisão de portabilidade em
@@ -250,9 +253,11 @@ MayerDock\
 │  ├─ MayerDock.iss # script do instalador (Inno Setup 6)
 │  └─ msix\         # manifesto (template), assets e build-msix.ps1
 ├─ MayerDock-Linux\ # projeto irmão (Wayland): ADR + PRD, sem código ainda
+├─ .beads\          # issue tracker (bd): epics/tasks da v1.5
 ├─ docs\PRD.md      # PRD do produto
 ├─ docs\TASKS.md    # backlog/tarefas (ex.: build MSIX para a Store)
 ├─ docs\MSIX.md     # levantamento de requisitos MSIX/Store
+├─ docs\AGENT-MCP.md# produto: workspace de agentes de IA (v1.5)
 └─ src\
    ├─ main.rs       # entrada
    ├─ win.rs        # utilitários Win32, monitor e log
