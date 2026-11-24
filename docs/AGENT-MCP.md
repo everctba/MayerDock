@@ -299,9 +299,14 @@ Validado end-to-end (dock + sidecar + Notepad): handshake, sessão no HUD, `list
 `click` + `type_text` inseriram “MayerDock agent input test” (lido por `get_text` e
 `wait_for`), **sem mover o cursor**.
 
-**Próximo:** **focus lease** com modal de aprovação (`md-xc6`) e input global
-(`SendInput`) liberado só durante o lease; depois UIA `Invoke/SetValue` e CDP para
-browser (`md-gx2`).
+**Focus lease (v1) validado:** `focus_lease` abre modal (`Permitir/Negar`) no dock; ao
+aprovar, traz a janela para foco por N s, o HUD mostra `· lease Ns` e, ao expirar, restaura
+a janela anterior. `global_click`/`global_type`/`global_key` (`SendInput`) **falham sem
+lease** e funcionam durante o lease (digitou “global lease ok” no Notepad via mouse/teclado
+reais). Para testes automatizados, `MAYERDOCK_LEASE_AUTO=1` aprova sem modal (QA).
+
+**Próximo:** `Sempre para este app` + rate limit do lease, UIA `Invoke/SetValue`, CDP para
+browser (`md-gx2`) e HUD com `Parar tudo`/hotkey (`md-xtm`).
 
 ---
 

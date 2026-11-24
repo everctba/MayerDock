@@ -44,11 +44,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, FindWindowW,
     GetClassNameW, GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageW, GetWindowLongW,
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindow, IsWindowVisible, KillTimer, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage,
-    RegisterClassW, RegisterWindowMessageW, SendMessageW, SetCursor, SetForegroundWindow, SetTimer,
-    SetWindowPos, ShowWindow, TranslateMessage, EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE,
-    HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZEWE, IDI_APPLICATION, MSG, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE,
+    IsWindow, IsWindowVisible, KillTimer, LoadCursorW, LoadIconW, MessageBoxW, PostMessageW,
+    PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SendMessageW, SetCursor,
+    SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage,
+    EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZEWE,
+    IDI_APPLICATION, IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MSG,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE,
     WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_CREATE, WM_DESTROY,
     WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE,
@@ -123,6 +124,13 @@ struct Slot {
     valid_origin: bool,
 }
 
+/// Focus lease aprovado pelo usuário: foco real por N segundos; depois restaura.
+struct Lease {
+    hwnd: HWND,
+    previous: HWND,
+    until: std::time::Instant,
+}
+
 struct State {
     hwnd: HWND,
     abd: APPBARDATA,
@@ -151,6 +159,8 @@ struct State {
     btn_stop: RECT,
     /// Sessão de agente conectada via MCP (HUD).
     agent: Option<AgentInfo>,
+    /// Lease de foco ativo (modal aprovado) e janela a restaurar.
+    lease: Option<Lease>,
     font_title: HFONT,
     font_ui: HFONT,
     font_hint: HFONT,
@@ -240,6 +250,7 @@ impl State {
                 bottom: 0,
             },
             agent: None,
+            lease: None,
             font_title: make_font(15, 600, scale),
             font_ui: make_font(13, 400, scale),
             font_hint: make_font(13, 400, scale),
@@ -1075,7 +1086,13 @@ fn paint(hwnd: HWND, s: &mut State) {
                 bottom: header_h,
             };
             if hud.right > hud.left + px(s, 40) {
-                let text = format!("● {} · {}", agent.name, agent.activity);
+                let mut text = format!("● {} · {}", agent.name, agent.activity);
+                if let Some(lease) = &s.lease {
+                    let remaining = lease
+                        .until
+                        .saturating_duration_since(std::time::Instant::now());
+                    text.push_str(&format!(" · lease {}s", remaining.as_secs() + 1));
+                }
                 draw_text(
                     hdc,
                     s.font_hint,
@@ -1938,12 +1955,114 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
             }
             ok(json!({ "ok": true }))
         }
+        "focus_lease" => {
+            let raw = req
+                .pointer("/args/hwnd")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let hwnd = raw as usize as HWND;
+            if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
+                return err("hwnd inválido");
+            }
+            if s.lease.is_some() {
+                return err("já existe um lease de foco ativo");
+            }
+            let seconds = req
+                .pointer("/args/seconds")
+                .and_then(Value::as_u64)
+                .unwrap_or(15)
+                .clamp(3, 120);
+            let reason = req
+                .pointer("/args/reason")
+                .and_then(Value::as_str)
+                .unwrap_or("testes do agente");
+            let title = window_title(hwnd).unwrap_or_default();
+            // QA: MAYERDOCK_LEASE_AUTO=1 aprova sem modal (só para testes).
+            let auto = std::env::var("MAYERDOCK_LEASE_AUTO")
+                .map(|value| value == "1")
+                .unwrap_or(false);
+            let granted = if auto {
+                true
+            } else {
+                let message = format!(
+                    "O agente quer controlar mouse e teclado por {seconds} s.\n\n\
+                     Janela: «{title}»\nMotivo: {reason}\n\nPermitir?"
+                );
+                let body = win::wide(&message);
+                let caption = win::wide("MayerDock — pedido do agente");
+                unsafe {
+                    MessageBoxW(
+                        s.hwnd,
+                        body.as_ptr(),
+                        caption.as_ptr(),
+                        MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND,
+                    ) == IDYES as i32
+                }
+            };
+            if granted {
+                let previous = unsafe { GetForegroundWindow() };
+                unsafe {
+                    SetForegroundWindow(hwnd);
+                }
+                s.lease = Some(Lease {
+                    hwnd,
+                    previous,
+                    until: std::time::Instant::now() + std::time::Duration::from_secs(seconds),
+                });
+                if let Some(agent) = s.agent.as_mut() {
+                    agent.activity = "lease ativo".to_string();
+                }
+                win::log(&format!(
+                    "agent: lease concedido ({seconds}s) hwnd=0x{:X}",
+                    hwnd as usize
+                ));
+                ok(json!({ "granted": true, "seconds": seconds }))
+            } else {
+                win::log("agent: lease negado pelo usuário");
+                ok(json!({ "granted": false }))
+            }
+        }
         other => err(&format!("tool desconhecida: {other}")),
     }
 }
 
 /// Kill switch: encerra a sessão e derruba a conexão do pipe.
+/// Expira o lease: restaura o foco da janela anterior e limpa o HUD.
+fn expire_lease(s: &mut State) {
+    let Some(lease) = s.lease.as_ref() else {
+        return;
+    };
+    if std::time::Instant::now() < lease.until {
+        return;
+    }
+    let previous = lease.previous;
+    let leased = lease.hwnd;
+    s.lease = None;
+    if !previous.is_null() && unsafe { IsWindow(previous) } != 0 {
+        unsafe {
+            SetForegroundWindow(previous);
+        }
+    }
+    if let Some(agent) = s.agent.as_mut() {
+        agent.activity = "lease expirado".to_string();
+    }
+    win::log(&format!(
+        "agent: lease expirado (foco restaurado; era hwnd=0x{:X})",
+        leased as usize
+    ));
+    unsafe {
+        InvalidateRect(s.hwnd, ptr::null(), 0);
+    }
+}
+
 fn stop_agent(s: &mut State) {
+    if let Some(lease) = s.lease.take() {
+        if !lease.previous.is_null() && unsafe { IsWindow(lease.previous) } != 0 {
+            unsafe {
+                SetForegroundWindow(lease.previous);
+            }
+        }
+    }
     // Kill switch: encerra o processo do sidecar (o harness vê o MCP cair) e
     // derruba a conexão do pipe. Sem pid (ex.: sessão antiga), só desconecta.
     let pid = s.agent.as_ref().map(|agent| agent.pid).unwrap_or(0);
@@ -2181,6 +2300,7 @@ unsafe extern "system" fn dock_proc(
             0
         }
         WM_TIMER => {
+            expire_lease(s);
             update_visibility(s);
             sync_slot(s, false);
             0

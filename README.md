@@ -134,10 +134,15 @@ que harnesses compatíveis (Claude Code, Cursor, DSH) consomem. Integra com o do
 | `send_key` | Tecla direcionada (`enter`, `tab`, `esc`, setas, etc.) |
 | `get_text` | Lê o texto de uma janela/controle (`WM_GETTEXT`) |
 | `wait_for` | Espera título/texto/visibilidade com timeout (sem polling cego) |
+| `focus_lease` | Pede **permissão no dock** (modal) para controlar mouse/teclado por N s; restaura o foco ao expirar |
+| `global_click` / `global_type` / `global_key` | Input **real** (`SendInput`) — só funciona dentro de um lease aprovado |
 
-Com o dock aberto, a sessão aparece no **HUD** (`● Claude · lendo slots`) e o botão
-**■ Parar** encerra o sidecar (kill switch). Capturas em
+Com o dock aberto, a sessão aparece no **HUD** (`● Claude · lendo slots`), o lease mostra a
+contagem (`· lease 12s`) e o botão **■ Parar** encerra o sidecar (kill switch). Capturas em
 `%APPDATA%\MayerDock\agent\<pid>\cap-<timestamp>.png` (caminho, DPI e imagem base64).
+
+> Para testes automatizados, `MAYERDOCK_LEASE_AUTO=1` no dock aprova o lease sem modal
+> (**apenas QA**; nunca usar em produção).
 
 Config de exemplo:
 

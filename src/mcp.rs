@@ -33,14 +33,17 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::Storage::Xps::PrintWindow;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    keybd_event, mouse_event, IsWindowEnabled, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GetClassNameW, GetDlgCtrlID, GetWindowLongW, GetWindowRect,
     GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
-    PostMessageW, SendMessageW, ShowWindow, GWL_EXSTYLE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
-    SW_SHOWNOACTIVATE, WM_CHAR, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WS_EX_TOOLWINDOW,
+    PostMessageW, SendMessageW, SetCursorPos, ShowWindow, GWL_EXSTYLE, SW_MAXIMIZE, SW_MINIMIZE,
+    SW_RESTORE, SW_SHOWNOACTIVATE, WM_CHAR, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WS_EX_TOOLWINDOW,
 };
 
 /// `MK_LBUTTON` (windows-sys não expõe direto no módulo de mensagens).
@@ -457,6 +460,54 @@ fn tools() -> Value {
                 },
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "focus_lease",
+            "description": "Pede ao usuário (modal no dock) permissão para controlar mouse e \
+                teclado por N segundos. Sem lease aprovado, as tools global_* falham.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hwnd": { "type": "integer" },
+                    "title": { "type": "string" },
+                    "seconds": { "type": "integer" },
+                    "reason": { "type": "string" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "global_click",
+            "description": "Clique global (SendInput/mouse real) — EXIGE focus lease aprovado.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" }
+                },
+                "required": ["x", "y"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "global_type",
+            "description": "Digitação global (SendInput/unicode, teclado real) — EXIGE focus lease.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "text": { "type": "string" } },
+                "required": ["text"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "global_key",
+            "description": "Tecla global (SendInput, teclado real) — EXIGE focus lease.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "key": { "type": ["string", "integer"] } },
+                "required": ["key"],
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -538,6 +589,10 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
         "send_key" => send_key(args),
         "get_text" => get_text(args),
         "wait_for" => wait_for(args),
+        "focus_lease" => focus_lease(args),
+        "global_click" => global_click(args),
+        "global_type" => global_type(args),
+        "global_key" => global_key(args),
         _ => Err(format!("tool desconhecida: {name}")),
     }
 }
@@ -962,7 +1017,10 @@ fn type_text(args: &Value) -> Result<Vec<Value>, String> {
         hwnd as usize,
         text.chars().count()
     ));
-    Ok(vec![text_content(&format!("digitado em 0x{:X}: {text:?}", hwnd as usize))])
+    Ok(vec![text_content(&format!(
+        "digitado em 0x{:X}: {text:?}",
+        hwnd as usize
+    ))])
 }
 
 fn send_key(args: &Value) -> Result<Vec<Value>, String> {
@@ -1004,7 +1062,10 @@ fn send_key(args: &Value) -> Result<Vec<Value>, String> {
 fn get_text(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = find_window(args)?;
     let text = window_message_text(hwnd).unwrap_or_else(|| window_title(hwnd));
-    Ok(vec![text_content(&format!("0x{:X}: {text:?}", hwnd as usize))])
+    Ok(vec![text_content(&format!(
+        "0x{:X}: {text:?}",
+        hwnd as usize
+    ))])
 }
 
 fn window_message_text(hwnd: HWND) -> Option<String> {
@@ -1015,12 +1076,8 @@ fn window_message_text(hwnd: HWND) -> Option<String> {
         }
         let len = len.min(1 << 20);
         let mut buffer = vec![0u16; len + 1];
-        let copied = SendMessageW(
-            hwnd,
-            WM_GETTEXT,
-            buffer.len(),
-            buffer.as_mut_ptr() as isize,
-        ) as usize;
+        let copied =
+            SendMessageW(hwnd, WM_GETTEXT, buffer.len(), buffer.as_mut_ptr() as isize) as usize;
         if copied == 0 {
             return None;
         }
@@ -1073,5 +1130,153 @@ fn wait_for(args: &Value) -> Result<Vec<Value>, String> {
             return Err(format!("timeout de {timeout} ms"));
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Focus lease + input global (SendInput) — liberado só durante o lease
+// ---------------------------------------------------------------------------
+
+static mut LEASE_UNTIL: Option<std::time::Instant> = None;
+
+fn lease_active() -> bool {
+    unsafe {
+        LEASE_UNTIL
+            .map(|until| until > std::time::Instant::now())
+            .unwrap_or(false)
+    }
+}
+
+fn require_lease() -> Result<(), String> {
+    if lease_active() {
+        Ok(())
+    } else {
+        Err(
+            "sem focus lease aprovado — chame focus_lease (modal no dock) antes do input global"
+                .to_string(),
+        )
+    }
+}
+
+fn focus_lease(args: &Value) -> Result<Vec<Value>, String> {
+    let hwnd = find_window(args)?;
+    let seconds = args
+        .get("seconds")
+        .and_then(Value::as_u64)
+        .unwrap_or(15)
+        .clamp(3, 120);
+    let reason = args
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("testes do agente");
+    let result = dock_tool(
+        "focus_lease",
+        json!({ "hwnd": hwnd as usize, "seconds": seconds, "reason": reason }),
+    )?;
+    let granted = result
+        .get("granted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if granted {
+        unsafe {
+            LEASE_UNTIL = Some(std::time::Instant::now() + std::time::Duration::from_secs(seconds));
+        }
+        Ok(vec![text_content(&format!(
+            "lease concedido por {seconds} s (janela 0x{:X}); input global liberado até expirar",
+            hwnd as usize
+        ))])
+    } else {
+        Ok(vec![text_content("lease negado pelo usuário")])
+    }
+}
+
+fn global_click(args: &Value) -> Result<Vec<Value>, String> {
+    require_lease()?;
+    let x = args.get("x").and_then(Value::as_i64).ok_or("informe x")? as i32;
+    let y = args.get("y").and_then(Value::as_i64).ok_or("informe y")? as i32;
+    dock_activity_if_connected("input global (mouse)");
+    unsafe {
+        SetCursorPos(x, y);
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    }
+    crate::win::log(&format!("mcp: global_click ({x},{y})"));
+    Ok(vec![text_content(&format!("clique global em ({x},{y})"))])
+}
+
+fn global_type(args: &Value) -> Result<Vec<Value>, String> {
+    require_lease()?;
+    let text = args
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or("informe text")?;
+    dock_activity_if_connected("input global (teclado)");
+    for ch in text.chars() {
+        match ch {
+            '\n' | '\r' => press_vk(0x0D),
+            '\t' => press_vk(0x09),
+            other => send_unicode(other as u16),
+        }
+    }
+    crate::win::log(&format!("mcp: global_type {} chars", text.chars().count()));
+    Ok(vec![text_content(&format!(
+        "digitado globalmente: {} chars",
+        text.chars().count()
+    ))])
+}
+
+fn global_key(args: &Value) -> Result<Vec<Value>, String> {
+    require_lease()?;
+    let key = args.get("key").ok_or("informe key")?;
+    let vk: u16 = if let Some(code) = key.as_u64() {
+        code as u16
+    } else {
+        match key.as_str().unwrap_or("").to_ascii_lowercase().as_str() {
+            "enter" | "return" => 0x0D,
+            "tab" => 0x09,
+            "esc" | "escape" => 0x1B,
+            "space" => 0x20,
+            "backspace" => 0x08,
+            "delete" | "del" => 0x2E,
+            "up" => 0x26,
+            "down" => 0x28,
+            "left" => 0x25,
+            "right" => 0x27,
+            other => return Err(format!("tecla desconhecida: {other}")),
+        }
+    };
+    press_vk(vk);
+    crate::win::log(&format!("mcp: global_key 0x{vk:02X}"));
+    Ok(vec![text_content(&format!("tecla global 0x{vk:02X}"))])
+}
+
+fn press_vk(vk: u16) {
+    unsafe {
+        keybd_event(vk as u8, 0, 0, 0);
+        keybd_event(vk as u8, 0, 2, 0); // KEYEVENTF_KEYUP
+    }
+}
+
+fn send_unicode(code: u16) {
+    unsafe {
+        let mut down: INPUT = std::mem::zeroed();
+        down.r#type = INPUT_KEYBOARD;
+        down.Anonymous.ki = KEYBDINPUT {
+            wVk: 0,
+            wScan: code,
+            dwFlags: KEYEVENTF_UNICODE,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+        let mut up: INPUT = std::mem::zeroed();
+        up.r#type = INPUT_KEYBOARD;
+        up.Anonymous.ki = KEYBDINPUT {
+            wVk: 0,
+            wScan: code,
+            dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+        SendInput(2, [down, up].as_ptr(), std::mem::size_of::<INPUT>() as i32);
     }
 }
