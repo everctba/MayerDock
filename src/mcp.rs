@@ -560,6 +560,37 @@ fn tools() -> Value {
                 },
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "uia_query",
+            "description": "Árvore de UI Automation de uma janela (nome, tipo, AutomationId, \
+                posição, enabled) — ponte PowerShell (protótipo; COM nativo depois).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hwnd": { "type": "integer" },
+                    "title": { "type": "string" },
+                    "max": { "type": "integer" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "uia_invoke",
+            "description": "Invoca (InvokePattern) ou define valor (ValuePattern) de um \
+                elemento UIA pelo nome ou AutomationId — ponte PowerShell (protótipo).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hwnd": { "type": "integer" },
+                    "title": { "type": "string" },
+                    "name": { "type": "string" },
+                    "action": { "type": "string", "enum": ["invoke", "set"] },
+                    "value": { "type": "string" }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -648,6 +679,8 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
         "set_text" => set_text(args),
         "control_click" => control_click(args),
         "browser_launch" => browser_launch(args),
+        "uia_query" => uia_query(args),
+        "uia_invoke" => uia_invoke(args),
         _ => Err(format!("tool desconhecida: {name}")),
     }
 }
@@ -1542,5 +1575,134 @@ fn browser_launch(args: &Value) -> Result<Vec<Value>, String> {
         } else {
             "headed offscreen: GPU real, janela fora da tela e sem throttle de rAF (flags acima)."
         }
+    ))])
+}
+
+// ---------------------------------------------------------------------------
+// UIA (ponte PowerShell — protótipo; COM nativo entra depois)
+// ---------------------------------------------------------------------------
+
+fn ps_escape(text: &str) -> String {
+    text.replace('\'', "''")
+}
+
+fn run_powershell(script: &str) -> Result<String, String> {
+    let encoded: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&encoded);
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            b64.as_str(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|err| format!("powershell: {err}"))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "powershell falhou: {}",
+            err.lines().next().unwrap_or("erro desconhecido")
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn uia_query(args: &Value) -> Result<Vec<Value>, String> {
+    let hwnd = find_window(args)?;
+    let max = args
+        .get("max")
+        .and_then(Value::as_u64)
+        .unwrap_or(60)
+        .clamp(1, 300);
+    let script = format!(
+        r#"
+Add-Type -AssemblyName UIAutomationClient
+$h = [IntPtr]{hwnd}
+$root = [System.Windows.Automation.AutomationElement]::FromHandle($h)
+if ($null -eq $root) {{ '[]'; exit 0 }}
+$all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+$out = @()
+$n = [Math]::Min({max}, $all.Count)
+for ($i = 0; $i -lt $n; $i++) {{
+  $e = $all.Item($i)
+  $r = $e.Current.BoundingRectangle
+  $ctrl = $e.Current.ControlType
+  $out += [pscustomobject]@{{
+    name = $e.Current.Name
+    type = $(if ($ctrl) {{ $ctrl.ProgrammaticName }} else {{ '' }})
+    id = $e.Current.AutomationId
+    enabled = $e.Current.IsEnabled
+    x = [int]$r.X; y = [int]$r.Y; w = [int]$r.Width; h = [int]$r.Height
+  }}
+}}
+$out | ConvertTo-Json -Compress
+"#,
+        hwnd = hwnd as usize,
+        max = max
+    );
+    dock_activity_if_connected("consultando UIA");
+    let out = run_powershell(&script)?;
+    crate::win::log(&format!(
+        "mcp: uia_query hwnd=0x{:X} ({} bytes)",
+        hwnd as usize,
+        out.len()
+    ));
+    Ok(vec![text_content(if out.is_empty() { "[]" } else { &out })])
+}
+
+fn uia_invoke(args: &Value) -> Result<Vec<Value>, String> {
+    let hwnd = find_window(args)?;
+    let name = args
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or("informe name")?;
+    let action = args
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("invoke");
+    let value = args.get("value").and_then(Value::as_str).unwrap_or("");
+    let script = format!(
+        r#"
+Add-Type -AssemblyName UIAutomationClient
+$h = [IntPtr]{hwnd}
+$root = [System.Windows.Automation.AutomationElement]::FromHandle($h)
+$all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+$target = $null
+for ($i = 0; $i -lt $all.Count; $i++) {{
+  $e = $all.Item($i)
+  if ($e.Current.Name -eq '{name}' -or $e.Current.AutomationId -eq '{name}') {{ $target = $e; break }}
+}}
+if ($null -eq $target) {{ 'NOT_FOUND'; exit 0 }}
+if ('{action}' -eq 'set') {{
+  $p = $null
+  if ($target.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$p)) {{ $p.SetValue('{value}'); 'SET_OK' }} else {{ 'NO_VALUE_PATTERN' }}
+}} else {{
+  $p = $null
+  if ($target.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$p)) {{ $p.Invoke(); 'INVOKE_OK' }} else {{ 'NO_INVOKE_PATTERN' }}
+}}
+"#,
+        hwnd = hwnd as usize,
+        name = ps_escape(name),
+        action = action,
+        value = ps_escape(value)
+    );
+    dock_activity_if_connected("acionando UIA");
+    let out = run_powershell(&script)?;
+    crate::win::log(&format!(
+        "mcp: uia_invoke hwnd=0x{:X} name={name:?} action={action} -> {out}",
+        hwnd as usize
+    ));
+    Ok(vec![text_content(&format!(
+        "uia {action} {name:?} em 0x{:X}: {out}",
+        hwnd as usize
     ))])
 }

@@ -321,6 +321,13 @@ headed usa `--window-position=-2400,-2400` (GPU real, fora da tela) e devolve o
 de WebGPU/WebGL2. O probe do endpoint usa `curl.exe` (o `TcpStream` do sidecar GUI dava
 timeout no loopback).
 
+**UIA (ponte PowerShell, protótipo):** `uia_query` devolve a árvore de UI Automation
+(nome/tipo/AutomationId/posição) e `uia_invoke` aciona `InvokePattern`/`ValuePattern` por
+nome ou AutomationId. Validado na Calculadora do Windows: `num5Button` + `plusButton` +
+`num3Button` + `equalButton` → `CalculatorResults = "Display is 8"` (5+3=8). A ponte usa
+`powershell.exe` + `UIAutomationClient` (~centenas de ms por chamada); a implementação
+nativa com `IUIAutomation` (COM) é follow-up (`md-uia`).
+
 **Empacotamento validado:** `.\build.ps1 -Installer -Msix` continua funcionando com o
 sidecar — Inno 2,47 MB e MSIX 0,55 MB (exe 908 KB, deps offline). Corrigido bug do
 `build.ps1` (`$installer` colidia com o switch `-Installer`, como antes com `$msix`).

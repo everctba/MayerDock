@@ -137,6 +137,8 @@ que harnesses compatíveis (Claude Code, Cursor, DSH) consomem. Integra com o do
 | `set_text` | Define o texto de um controle via `WM_SETTEXT` (sem teclado global) |
 | `control_click` | Aciona um controle via `BM_CLICK` (botões) com fallback de clique no centro |
 | `browser_launch` | Sobe Chrome/Edge com perfil dedicado, flags anti-throttle e `--remote-debugging-port`; devolve o **endpoint CDP** (headed offscreen = GPU real para WebGPU/WebGL2) |
+| `uia_query` | Árvore de UI Automation da janela (nome, tipo, AutomationId, posição) |
+| `uia_invoke` | Invoca (`InvokePattern`) ou define valor (`ValuePattern`) de um elemento UIA por nome/AutomationId |
 | `focus_lease` | Pede **permissão no dock** (modal) para controlar mouse/teclado por N s; restaura o foco ao expirar |
 | `global_click` / `global_type` / `global_key` | Input **real** (`SendInput`) — só funciona dentro de um lease aprovado |
 

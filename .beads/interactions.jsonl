@@ -2,3 +2,6 @@
 {"id":"int-74c35782","kind":"field_change","created_at":"2026-11-24T23:04:14.4191343Z","actor":"everctba","issue_id":"md-xtm","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-524c8478","kind":"field_change","created_at":"2026-11-24T23:04:50.0258329Z","actor":"everctba","issue_id":"md-xc6","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-2585fc2c","kind":"field_change","created_at":"2026-11-24T23:20:40.5202961Z","actor":"everctba","issue_id":"md-xi4","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
+{"id":"int-d48bde0f","kind":"field_change","created_at":"2026-11-24T23:23:53.7084298Z","actor":"everctba","issue_id":"md-11c","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-5e367e54","kind":"field_change","created_at":"2026-11-24T23:23:57.5557824Z","actor":"everctba","issue_id":"md-gx2","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
+{"id":"int-00f82b62","kind":"field_change","created_at":"2026-11-24T23:24:01.5639413Z","actor":"everctba","issue_id":"md-b8m","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
