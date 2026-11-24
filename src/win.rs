@@ -5,11 +5,11 @@ use std::ptr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows_sys::Win32::Foundation::{
-    APPMODEL_ERROR_NO_PACKAGE, CloseHandle, HINSTANCE, HWND, POINT, RECT,
+    CloseHandle, APPMODEL_ERROR_NO_PACKAGE, HINSTANCE, HWND, POINT, RECT,
 };
 use windows_sys::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HMONITOR, MONITORINFO,
-    MONITOR_DEFAULTTOPRIMARY, MONITOR_DEFAULTTONEAREST,
+    MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
 };
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, WriteFile};
 use windows_sys::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
@@ -42,8 +42,18 @@ fn monitor_info(mon: HMONITOR) -> (RECT, RECT) {
             (mi.rcMonitor, mi.rcWork)
         } else {
             (
-                RECT { left: 0, top: 0, right: 1920, bottom: 1080 },
-                RECT { left: 0, top: 0, right: 1920, bottom: 1040 },
+                RECT {
+                    left: 0,
+                    top: 0,
+                    right: 1920,
+                    bottom: 1080,
+                },
+                RECT {
+                    left: 0,
+                    top: 0,
+                    right: 1920,
+                    bottom: 1040,
+                },
             )
         }
     }

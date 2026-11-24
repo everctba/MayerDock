@@ -112,6 +112,39 @@ log: C:\Users\...\AppData\Roaming\MayerDock\mayerdock.log
 No modo **MSIX** (`packaged: true`, com `package:` também), esses caminhos são os da
 **área do pacote** (redirecionada pelo Windows) — é o endereço real para achar config/log.
 
+## MCP (protótipo, v1.5)
+
+`mayerdock.exe --mcp` sobe um servidor **MCP stdio** (JSON-RPC 2.0, uma mensagem por linha)
+que harnesses compatíveis (Claude Code, Cursor, DSH) consomem. Hoje é a **primeira fatia,
+standalone** (ainda sem slots/HUD/lease do dock):
+
+| Tool | Função |
+| --- | --- |
+| `status` | Versão, PID e resumo do ambiente |
+| `list_windows` | Janelas visíveis (título, classe, PID, retângulo, DPI) |
+| `capture_window` | PNG de **uma** janela (por `hwnd` ou `title`), sem mover o cursor |
+| `open_app` | Abre um app **sem ativar** (`ShellExecute` + `SW_SHOWNOACTIVATE`) |
+| `window_state` | Maximiza/minimiza/restaura/fecha sem trazer para frente |
+
+Capturas em `%APPDATA%\MayerDock\agent\<pid>\cap-<timestamp>.png`; o retorno inclui
+caminho, dimensões, DPI e a imagem em base64 (MCP image).
+
+Config de exemplo:
+
+```json
+{
+  "mcpServers": {
+    "mayerdock": {
+      "command": "H:\\caminho\\para\\dist\\MayerDock\\mayerdock.exe",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+Próxima fatia: named pipe com o dock (slots, HUD, `focus_lease`) e input direcionado
+(UIA/CDP). Detalhes em [docs/AGENT-MCP.md](docs/AGENT-MCP.md).
+
 ## Instalador
 
 Gerado com **Inno Setup 6** pela flag `-Installer`. O `build.ps1` procura o `ISCC.exe` em

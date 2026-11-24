@@ -28,7 +28,8 @@ use windows_sys::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, ReleaseCapture, SetCapture, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
+    RegisterHotKey, ReleaseCapture, SetCapture, UnregisterHotKey, MOD_ALT, MOD_CONTROL,
+    MOD_NOREPEAT,
 };
 use windows_sys::Win32::UI::Shell::{
     SHAppBarMessage, SHQueryUserNotificationState, Shell_NotifyIconW, ABE_RIGHT, ABM_NEW,
@@ -40,16 +41,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, FindWindowW,
     GetClassNameW, GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageW, GetWindowLongW,
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindow, IsWindowVisible, KillTimer, LoadCursorW, PostMessageW, PostQuitMessage,
+    IsWindow, IsWindowVisible, KillTimer, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage,
     RegisterClassW, RegisterWindowMessageW, SetCursor, SetForegroundWindow, SetTimer, SetWindowPos,
-    ShowWindow,
-    TranslateMessage, GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZEWE, IDI_APPLICATION,
-    LoadIconW, MSG, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_SHOWWINDOW, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_HOTKEY,
-    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP,
-    WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WM_DPICHANGED, WNDCLASSW,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS,
+    ShowWindow, TranslateMessage, EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, HWND_NOTOPMOST,
+    HWND_TOPMOST, IDC_ARROW, IDC_SIZEWE, IDI_APPLICATION, MSG, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::config::{self, Config};
@@ -185,9 +185,24 @@ impl State {
             slot_count,
             slots: vec![None; slot_count],
             picking: Vec::new(),
-            btn_menu: RECT { left: 0, top: 0, right: 0, bottom: 0 },
-            btn_close: RECT { left: 0, top: 0, right: 0, bottom: 0 },
-            btn_release: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+            btn_menu: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            btn_close: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            btn_release: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
             font_title: make_font(15, 600, scale),
             font_ui: make_font(13, 400, scale),
             font_hint: make_font(13, 400, scale),
@@ -320,12 +335,7 @@ pub fn run(cfg: Config) -> i32 {
         }
         apply_appbar(s);
 
-        let hotkey = RegisterHotKey(
-            hwnd,
-            HOTKEY_ID,
-            MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
-            VK_M,
-        );
+        let hotkey = RegisterHotKey(hwnd, HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_M);
         if hotkey == 0 {
             win::log("aviso: Ctrl+Alt+M não registrado (combinação em uso?)");
         }
@@ -588,7 +598,12 @@ fn sync_slot(s: &mut State, force: bool) {
         }
 
         let target = slot_rect(s, index);
-        let mut current = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut current = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         unsafe {
             GetWindowRect(hwnd, &mut current);
         }
@@ -640,7 +655,12 @@ fn pin_first_free(s: &mut State, hwnd: HWND) -> bool {
             ShowWindow(hwnd, SW_RESTORE);
         }
     }
-    let mut origin = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    let mut origin = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
     let ok = unsafe { GetWindowRect(hwnd, &mut origin) } != 0;
     s.slots[free] = Some(Slot {
         hwnd,
@@ -666,7 +686,12 @@ fn ensure_slot_fits(s: &mut State) {
             continue;
         };
         let target = slot_rect(s, index);
-        let mut actual = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut actual = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         unsafe {
             GetWindowRect(slot.hwnd, &mut actual);
         }
@@ -915,12 +940,22 @@ fn paint(hwnd: HWND, s: &mut State) {
         let btn_w = px(s, 32);
         let btn_gap = px(s, 2);
 
-        let hdr = RECT { left: 0, top: 0, right: w, bottom: header_h };
+        let hdr = RECT {
+            left: 0,
+            top: 0,
+            right: w,
+            bottom: header_h,
+        };
         let hb = CreateSolidBrush(rgb(30, 30, 36));
         FillRect(hdc, &hdr, hb);
         DeleteObject(hb);
 
-        let edge = RECT { left: 0, top: 0, right: px(s, 2).max(1), bottom: h };
+        let edge = RECT {
+            left: 0,
+            top: 0,
+            right: px(s, 2).max(1),
+            bottom: h,
+        };
         let eb = CreateSolidBrush(rgb(74, 112, 240));
         FillRect(hdc, &edge, eb);
         DeleteObject(eb);
@@ -1018,12 +1053,20 @@ unsafe fn draw_text(hdc: HDC, font: HFONT, color: u32, text: &str, rc: &mut RECT
 }
 
 unsafe fn draw_button(hdc: HDC, font: HFONT, rc: &RECT, label: &str, enabled: bool) {
-    let bg = if enabled { rgb(44, 44, 54) } else { rgb(30, 30, 36) };
+    let bg = if enabled {
+        rgb(44, 44, 54)
+    } else {
+        rgb(30, 30, 36)
+    };
     let brush = CreateSolidBrush(bg);
     FillRect(hdc, rc, brush);
     DeleteObject(brush);
     let mut text_rc = *rc;
-    let color = if enabled { rgb(210, 214, 226) } else { rgb(92, 96, 108) };
+    let color = if enabled {
+        rgb(210, 214, 226)
+    } else {
+        rgb(92, 96, 108)
+    };
     draw_text(
         hdc,
         font,
@@ -1232,7 +1275,12 @@ fn open_menu(s: &mut State) {
     });
 
     // Ancora no botão ☰: o menu abre à esquerda do dock.
-    let mut wr = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    let mut wr = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
     unsafe {
         GetWindowRect(s.hwnd, &mut wr);
     }
@@ -1341,7 +1389,8 @@ fn process_label(hwnd: HWND) -> String {
         }
         let mut buf = [0u16; 512];
         let mut size = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut size);
+        let ok =
+            QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut size);
         CloseHandle(process);
         if ok == 0 {
             return String::new();
@@ -1439,8 +1488,14 @@ pub fn print_status() {
     out.push_str(&format!("width_logical: {}\r\n", cfg.width));
     out.push_str(&format!("slots: {}\r\n", cfg.slots));
     out.push_str(&format!("data_dir: {}\r\n", data.display()));
-    out.push_str(&format!("config: {}\r\n", data.join("config.ini").display()));
-    out.push_str(&format!("log: {}\r\n", data.join("mayerdock.log").display()));
+    out.push_str(&format!(
+        "config: {}\r\n",
+        data.join("config.ini").display()
+    ));
+    out.push_str(&format!(
+        "log: {}\r\n",
+        data.join("mayerdock.log").display()
+    ));
     win::console_print(&out);
 }
 

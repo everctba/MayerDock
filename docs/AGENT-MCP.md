@@ -271,6 +271,25 @@ No cabeçalho do slot/janela do agente (e no topo do dock quando em execução):
 
 ---
 
+## 14.1 Estado da implementação (protótipo, 2026-11-24)
+
+Implementado em `src/mcp.rs` (`mayerdock.exe --mcp`), **standalone** (sem dock ainda):
+
+- servidor MCP **stdio** (initialize/ping/tools/list/tools/call) com guia embutido
+  (preferir dados estruturados; não capturar a tela inteira);
+- tools: `status`, `list_windows`, `capture_window` (PrintWindow
+  `PW_RENDERFULLCONTENT` + fallback BitBlt → PNG RGBA, DPI no retorno), `open_app`
+  (`ShellExecute` + `SW_SHOWNOACTIVATE`), `window_state`;
+- capturas em `%APPDATA%\MayerDock\agent\<pid>\cap-*.png`; log no `mayerdock.log`.
+
+Validado por cliente stdio de teste: handshake, 5 tools, 9 janelas listadas, captura do
+Notepad (1230×873 RGBA) e fechamento sem foco.
+
+**Próximo:** named pipe + token com o dock (task `md-7m5`), slots/HUD/lease
+(`md-xtm`/`md-xc6`) e input UIA/CDP (`md-11c`/`md-gx2`).
+
+---
+
 ## 15. Roadmap
 
 ### v0.1.0 — marco atual (concluído)

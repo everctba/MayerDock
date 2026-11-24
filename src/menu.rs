@@ -21,7 +21,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, LoadCursorW, PostMessageW,
     RegisterClassW, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOPMOST, IDC_ARROW,
-    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, WM_CANCELMODE, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN,
+    SWP_NOACTIVATE, SW_SHOWNOACTIVATE, WM_CANCELMODE, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_POPUP,
 };
@@ -286,10 +286,46 @@ fn paint(hwnd: HWND) {
         DeleteObject(bg);
 
         let border = CreateSolidBrush(rgb(74, 78, 94));
-        FillRect(hdc, &RECT { left: 0, top: 0, right: rc.right, bottom: 1 }, border);
-        FillRect(hdc, &RECT { left: 0, top: rc.bottom - 1, right: rc.right, bottom: rc.bottom }, border);
-        FillRect(hdc, &RECT { left: 0, top: 0, right: 1, bottom: rc.bottom }, border);
-        FillRect(hdc, &RECT { left: rc.right - 1, top: 0, right: rc.right, bottom: rc.bottom }, border);
+        FillRect(
+            hdc,
+            &RECT {
+                left: 0,
+                top: 0,
+                right: rc.right,
+                bottom: 1,
+            },
+            border,
+        );
+        FillRect(
+            hdc,
+            &RECT {
+                left: 0,
+                top: rc.bottom - 1,
+                right: rc.right,
+                bottom: rc.bottom,
+            },
+            border,
+        );
+        FillRect(
+            hdc,
+            &RECT {
+                left: 0,
+                top: 0,
+                right: 1,
+                bottom: rc.bottom,
+            },
+            border,
+        );
+        FillRect(
+            hdc,
+            &RECT {
+                left: rc.right - 1,
+                top: 0,
+                right: rc.right,
+                bottom: rc.bottom,
+            },
+            border,
+        );
         DeleteObject(border);
 
         let Some(m) = menu() else {
@@ -303,7 +339,12 @@ fn paint(hwnd: HWND) {
             if y + h > rc.bottom {
                 break;
             }
-            let row = RECT { left: 1, top: y, right: rc.right - 1, bottom: y + h };
+            let row = RECT {
+                left: 1,
+                top: y,
+                right: rc.right - 1,
+                bottom: y + h,
+            };
             match item.kind {
                 Kind::Header => {
                     let mut tr = RECT {

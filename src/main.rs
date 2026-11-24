@@ -4,12 +4,14 @@
 
 mod config;
 mod dock;
+mod mcp;
 mod menu;
 mod win;
 
 const HELP: &str = "MayerDock — dock lateral\r\n\
 Uso:\r\n\
   mayerdock.exe            inicia o dock (bandeja)\r\n\
+  mayerdock.exe --mcp      servidor MCP stdio (agent workspace, protótipo)\r\n\
   mayerdock.exe --status   versão, modo (pacote), config e caminhos reais\r\n\
   mayerdock.exe --version  mostra a versão\r\n\
   mayerdock.exe --help     esta ajuda\r\n";
@@ -17,6 +19,10 @@ Uso:\r\n\
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
+        Some("--mcp") => {
+            let code = mcp::serve(env!("CARGO_PKG_VERSION"));
+            std::process::exit(code);
+        }
         Some("--status") => {
             dock::print_status();
             return;

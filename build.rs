@@ -35,7 +35,9 @@ fn main() {
         let path = app_manifest.to_string_lossy().replace('\\', "/");
         format!("1 24 \"{path}\"\n")
     } else {
-        println!("cargo:warning=assets/app.manifest nao encontrado; exe sem manifesto (DPI/asInvoker)");
+        println!(
+            "cargo:warning=assets/app.manifest nao encontrado; exe sem manifesto (DPI/asInvoker)"
+        );
         String::new()
     };
 
