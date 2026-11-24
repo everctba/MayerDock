@@ -324,6 +324,8 @@ MayerDock\
 ├─ docs\TASKS.md    # backlog/tarefas (ex.: build MSIX para a Store)
 ├─ docs\MSIX.md     # levantamento de requisitos MSIX/Store
 ├─ docs\AGENT-MCP.md# produto: workspace de agentes de IA (v1.5)
+├─ docs\COMPAT.md   # matriz de compatibilidade de captura/UIA (spike md-tkr)
+├─ scripts\         # fuzz_smoke.py e compat_matrix.py (testes/medições)
 └─ src\
    ├─ main.rs       # entrada
    ├─ win.rs        # utilitários Win32, monitor e log

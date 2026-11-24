@@ -380,7 +380,12 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": {
                     "hwnd": { "type": "integer", "description": "Handle da janela" },
-                    "title": { "type": "string", "description": "Trecho do título (case-insensitive)" }
+                    "title": { "type": "string", "description": "Trecho do título (case-insensitive)" },
+                    "method": {
+                        "type": "string",
+                        "enum": ["auto", "printwindow", "bitblt"],
+                        "description": "Força o método de captura (spike de compatibilidade)"
+                    }
                 },
                 "additionalProperties": false
             }
@@ -857,7 +862,8 @@ fn find_window(args: &Value) -> Result<HWND, String> {
 
 fn capture_window(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = find_window(args)?;
-    let (png_bytes, width, height, dpi) = capture(hwnd)?;
+    let method = args.get("method").and_then(Value::as_str).unwrap_or("auto");
+    let (png_bytes, width, height, dpi, used) = capture(hwnd, method)?;
 
     let dir = capture_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("não criei {:?}: {e}", dir))?;
@@ -870,7 +876,7 @@ fn capture_window(args: &Value) -> Result<Vec<Value>, String> {
 
     let title = window_title(hwnd);
     let text = format!(
-        "capturada: {title:?}\r\narquivo: {}\r\n{width}x{height} px dpi={:.0}%\r\nbytes: {}",
+        "capturada: {title:?}\r\narquivo: {}\r\n{width}x{height} px dpi={:.0}%\r\nmétodo: {used}\r\nbytes: {}",
         file.display(),
         dpi * 100.0,
         png_bytes.len()
@@ -900,7 +906,7 @@ fn capture_dir() -> PathBuf {
         .join(std::process::id().to_string())
 }
 
-fn capture(hwnd: HWND) -> Result<(Vec<u8>, u32, u32, f64), String> {
+fn capture(hwnd: HWND, method: &str) -> Result<(Vec<u8>, u32, u32, f64, &'static str), String> {
     unsafe {
         let mut rect: RECT = std::mem::zeroed();
         if GetWindowRect(hwnd, &mut rect) == 0 {
@@ -933,10 +939,19 @@ fn capture(hwnd: HWND) -> Result<(Vec<u8>, u32, u32, f64), String> {
         let old = SelectObject(mem_dc, bitmap as HGDIOBJ);
 
         // PrintWindow captura até janelas ocluídas; BitBlt é o fallback.
-        let printed = PrintWindow(hwnd, mem_dc, PW_RENDERFULLCONTENT);
-        if printed == 0 {
+        // `method` permite comparar os dois no spike de compatibilidade.
+        let want_bitblt = method.eq_ignore_ascii_case("bitblt");
+        let printed = if want_bitblt {
+            0
+        } else {
+            PrintWindow(hwnd, mem_dc, PW_RENDERFULLCONTENT)
+        };
+        let used = if printed != 0 {
+            "PrintWindow"
+        } else {
             BitBlt(mem_dc, 0, 0, width, height, window_dc, 0, 0, SRCCOPY);
-        }
+            "BitBlt"
+        };
 
         let mut pixels = vec![0u8; (width as usize) * (height as usize) * 4];
         let mut info: BITMAPINFO = std::mem::zeroed();
@@ -983,7 +998,7 @@ fn capture(hwnd: HWND) -> Result<(Vec<u8>, u32, u32, f64), String> {
                 .write_image_data(&pixels)
                 .map_err(|e| format!("png data: {e}"))?;
         }
-        Ok((png_bytes, width as u32, height as u32, dpi))
+        Ok((png_bytes, width as u32, height as u32, dpi, used))
     }
 }
 

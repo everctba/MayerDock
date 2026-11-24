@@ -5,3 +5,4 @@
 {"id":"int-d48bde0f","kind":"field_change","created_at":"2026-11-24T23:23:53.7084298Z","actor":"everctba","issue_id":"md-11c","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-5e367e54","kind":"field_change","created_at":"2026-11-24T23:23:57.5557824Z","actor":"everctba","issue_id":"md-gx2","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
 {"id":"int-00f82b62","kind":"field_change","created_at":"2026-11-24T23:24:01.5639413Z","actor":"everctba","issue_id":"md-b8m","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
+{"id":"int-1b3742c2","kind":"field_change","created_at":"2026-11-24T23:53:27.2104832Z","actor":"everctba","issue_id":"md-tkr","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}

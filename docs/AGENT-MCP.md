@@ -328,6 +328,13 @@ nome ou AutomationId. Validado na Calculadora do Windows: `num5Button` + `plusBu
 `powershell.exe` + `UIAutomationClient` (~centenas de ms por chamada); a implementação
 nativa com `IUIAutomation` (COM) é follow-up (`md-uia`).
 
+**Captura por método (spike `md-tkr`):** `capture_window` aceita
+`method=auto|printwindow|bitblt`. A matriz em [COMPAT.md](COMPAT.md) (Windows 10 19041)
+mostra: Notepad/Explorer/WordPad ok nos dois métodos; **Calculadora (UWP) devolve frame
+preto no BitBlt** (PrintWindow ok) — o caso que justifica WGC para apps GPU/compostas;
+Chrome já aberto capturou por PrintWindow, mas `uia_query` falhou nele (usar CDP).
+Reprodução: `python scripts\compat_matrix.py`.
+
 **Empacotamento validado:** `.\build.ps1 -Installer -Msix` continua funcionando com o
 sidecar — Inno 2,47 MB e MSIX 0,55 MB (exe 908 KB, deps offline). Corrigido bug do
 `build.ps1` (`$installer` colidia com o switch `-Installer`, como antes com `$msix`).
