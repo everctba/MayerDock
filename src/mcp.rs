@@ -20,6 +20,7 @@ use std::ffi::c_void;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
@@ -39,11 +40,11 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, EnumWindows, GetClassNameW, GetDlgCtrlID, GetWindowLongW, GetWindowRect,
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
-    PostMessageW, SendMessageW, SetCursorPos, ShowWindow, GWL_EXSTYLE, SW_MAXIMIZE, SW_MINIMIZE,
-    SW_RESTORE, SW_SHOWNOACTIVATE, WM_CHAR, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WS_EX_TOOLWINDOW,
+    EnumChildWindows, EnumWindows, GetClassNameW, GetClientRect, GetDlgCtrlID, GetWindowLongW,
+    GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
+    IsWindowVisible, PostMessageW, SendMessageW, SetCursorPos, ShowWindow, BM_CLICK, GWL_EXSTYLE,
+    SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNOACTIVATE, WM_CHAR, WM_GETTEXT, WM_GETTEXTLENGTH,
+    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_SETTEXT, WS_EX_TOOLWINDOW,
 };
 
 /// `MK_LBUTTON` (windows-sys não expõe direto no módulo de mensagens).
@@ -515,6 +516,50 @@ fn tools() -> Value {
                 "required": ["key"],
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "set_text",
+            "description": "Define o texto de um controle/janela via WM_SETTEXT (sem teclado \
+                global). Ideal para Edit/RichEdit/combos.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hwnd": { "type": "integer" },
+                    "title": { "type": "string" },
+                    "text": { "type": "string" }
+                },
+                "required": ["text"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "control_click",
+            "description": "Aciona um controle por mensagem: BM_CLICK para botões e fallback \
+                de clique no centro do controle (PostMessage). Sem cursor global.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hwnd": { "type": "integer" },
+                    "title": { "type": "string" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "browser_launch",
+            "description": "Sobe Chrome/Edge com perfil dedicado, flags anti-throttle \
+                (CalculateNativeWinOcclusion etc.) e --remote-debugging-port; devolve o \
+                endpoint CDP para o agente conectar (Playwright/CDP). headless=false mantém \
+                GPU real (WebGPU/WebGL2).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string" },
+                    "headless": { "type": "boolean" },
+                    "cdp_port": { "type": "integer" }
+                },
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -600,6 +645,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
         "global_click" => global_click(args),
         "global_type" => global_type(args),
         "global_key" => global_key(args),
+        "set_text" => set_text(args),
+        "control_click" => control_click(args),
+        "browser_launch" => browser_launch(args),
         _ => Err(format!("tool desconhecida: {name}")),
     }
 }
@@ -1294,4 +1342,205 @@ fn send_unicode(code: u16) {
         };
         SendInput(2, [down, up].as_ptr(), std::mem::size_of::<INPUT>() as i32);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Ações por mensagem (WM_SETTEXT / BM_CLICK) — equivalente leve a UIA
+// ---------------------------------------------------------------------------
+
+fn set_text(args: &Value) -> Result<Vec<Value>, String> {
+    let hwnd = find_window(args)?;
+    let text = args
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or("informe text")?;
+    dock_activity_if_connected("definindo texto");
+    let wide = crate::win::wide(text);
+    let result = unsafe { SendMessageW(hwnd, WM_SETTEXT, 0, wide.as_ptr() as isize) };
+    crate::win::log(&format!(
+        "mcp: set_text hwnd=0x{:X} {} chars (ret={result})",
+        hwnd as usize,
+        text.chars().count()
+    ));
+    Ok(vec![text_content(&format!(
+        "texto definido em 0x{:X}: {text:?}",
+        hwnd as usize
+    ))])
+}
+
+fn control_click(args: &Value) -> Result<Vec<Value>, String> {
+    let hwnd = find_window(args)?;
+    dock_activity_if_connected("acionando controle");
+    let mut method = "BM_CLICK";
+    let result = unsafe { SendMessageW(hwnd, BM_CLICK, 0, 0) };
+    if result == 0 {
+        // Fallback: clique no centro do controle via mensagens.
+        let mut rect: RECT = unsafe { std::mem::zeroed() };
+        unsafe {
+            GetClientRect(hwnd, &mut rect);
+        }
+        let cx = (rect.right - rect.left) / 2;
+        let cy = (rect.bottom - rect.top) / 2;
+        let lparam = (((cy as u16 as u32) << 16) | (cx as u16 as u32)) as isize;
+        unsafe {
+            PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam);
+            PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam);
+        }
+        method = "PostMessage(center)";
+    }
+    unsafe {
+        CLICKS = CLICKS.saturating_add(1);
+    }
+    crate::win::log(&format!(
+        "mcp: control_click hwnd=0x{:X} via {method}",
+        hwnd as usize
+    ));
+    Ok(vec![text_content(&format!(
+        "controle 0x{:X} acionado via {method}",
+        hwnd as usize
+    ))])
+}
+
+// ---------------------------------------------------------------------------
+// Browser (Chrome/Edge) com GPU real e anti-throttle + endpoint CDP
+// ---------------------------------------------------------------------------
+
+fn find_browser() -> Option<String> {
+    let mut candidates: Vec<String> = Vec::new();
+    for var in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+        if let Ok(base) = std::env::var(var) {
+            candidates.push(format!(r"{base}\Google\Chrome\Application\chrome.exe"));
+            candidates.push(format!(r"{base}\Microsoft\Edge\Application\msedge.exe"));
+        }
+    }
+    candidates.push(r"C:\Program Files\Google\Chrome\Application\chrome.exe".to_string());
+    candidates.push(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe".to_string());
+    candidates
+        .into_iter()
+        .find(|path| std::path::Path::new(path).is_file())
+}
+
+/// Consulta o endpoint CDP via curl.exe (confiável a partir do sidecar).
+fn cdp_probe(port: u64) -> Result<String, String> {
+    let url = format!("http://127.0.0.1:{port}/json/version");
+    let output = Command::new("curl.exe")
+        .args(["-s", "--max-time", "2", url.as_str()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|err| format!("curl: {err}"))?;
+    if !output.status.success() {
+        return Err(format!("curl saiu com {:?}", output.status.code()));
+    }
+    let body = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if body.is_empty() {
+        return Err("curl: resposta vazia".to_string());
+    }
+    Ok(body)
+}
+
+fn browser_launch(args: &Value) -> Result<Vec<Value>, String> {
+    let url = args
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or("about:blank")
+        .to_string();
+    let headless = args
+        .get("headless")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let port = args.get("cdp_port").and_then(Value::as_u64).unwrap_or(9222);
+    let exe = find_browser().ok_or("Chrome/Edge não encontrado nesta máquina")?;
+    // Profile por porta: evita conflito de "singleton" com outra instância
+    // (um Chrome órfão no mesmo user-data-dir faria o novo launch sair sem a porta).
+    let profile = crate::config::data_dir().join(format!("browser-profile-{port}"));
+    let _ = std::fs::create_dir_all(&profile);
+
+    let mut flags: Vec<String> = vec![
+        format!("--remote-debugging-port={port}"),
+        format!("--user-data-dir={}", profile.display()),
+        "--no-first-run".to_string(),
+        "--no-default-browser-check".to_string(),
+        "--disable-backgrounding-occluded-windows".to_string(),
+        "--disable-renderer-backgrounding".to_string(),
+        "--disable-background-timer-throttling".to_string(),
+        // Chave para não estrangular rAF por "janela ocluída".
+        "--disable-features=CalculateNativeWinOcclusion".to_string(),
+        "--window-size=1280,800".to_string(),
+    ];
+    if headless {
+        flags.push("--headless=new".to_string());
+    } else {
+        // Janela nasce fora da tela; captura via WGC continua com GPU real.
+        flags.push("--window-position=-2400,-2400".to_string());
+    }
+    flags.push(url.clone());
+
+    // Sidecar é subsistema GUI: NÃO herdar stdio inválido no filho (o Chrome
+    // pode falhar silenciosamente se receber handles inválidos).
+    let mut child = Command::new(&exe)
+        .args(&flags)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| format!("não subi {exe:?}: {err}"))?;
+    let pid = child.id();
+    dock_activity_if_connected(if headless {
+        "abrindo browser (headless)"
+    } else {
+        "abrindo browser (GPU)"
+    });
+
+    // Espera o endpoint CDP ficar disponível.
+    let host = format!("127.0.0.1:{port}");
+    let endpoint = format!("http://{host}/json/version");
+    let mut version = String::new();
+    let mut port_open = false;
+    let mut last_error = String::new();
+    for attempt in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if let Ok(Some(status)) = child.try_wait() {
+            last_error = format!("browser saiu cedo: {status}");
+            crate::win::log(&format!("mcp: cdP filho saiu cedo: {status}"));
+            break;
+        }
+        match cdp_probe(port) {
+            Ok(body) => {
+                port_open = true;
+                if body.contains("webSocketDebuggerUrl") || body.contains("Browser") {
+                    version = body;
+                    break;
+                }
+                last_error = format!("resposta inesperada: {}", body.lines().next().unwrap_or(""));
+            }
+            Err(err) => {
+                last_error = err;
+                if attempt == 0 {
+                    crate::win::log(&format!("mcp: cdp probe (1ª tentativa): {last_error}"));
+                }
+            }
+        }
+    }
+    crate::win::log(&format!(
+        "mcp: browser_launch pid={pid} headless={headless} cdp={endpoint} porta_aberta={port_open} versao={}",
+        if version.is_empty() { "não" } else { "sim" }
+    ));
+    let version_short: String = if version.is_empty() {
+        format!("(CDP indisponível: {last_error})")
+    } else {
+        version.chars().take(400).collect()
+    };
+    Ok(vec![text_content(&format!(
+        "browser: {exe}\npid: {pid}\nheadless: {headless}\ncdp: {endpoint} \
+         (porta_aberta={port_open})\nprofile: {}\nflags: {}\n\nversão CDP: {version_short}\n\n{}",
+        profile.display(),
+        flags.join(" "),
+        if headless {
+            "headless não tem WebGPU/WebGL2 confiável; use headless=false para baseline/GPU real."
+        } else {
+            "headed offscreen: GPU real, janela fora da tela e sem throttle de rAF (flags acima)."
+        }
+    ))])
 }

@@ -189,10 +189,10 @@ try {
             Write-Host "[mayerdock] ISCC: $iscc" -ForegroundColor DarkGray
             & $iscc '/Qp' $iss
             if ($LASTEXITCODE -ne 0) { throw "ISCC falhou (exit $LASTEXITCODE)." }
-            $installer = Get-ChildItem (Join-Path $root 'dist\installer') -Filter 'MayerDock-Setup-*.exe' -ErrorAction SilentlyContinue |
+            $installerFile = Get-ChildItem (Join-Path $root 'dist\installer') -Filter 'MayerDock-Setup-*.exe' -ErrorAction SilentlyContinue |
                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($installer) {
-                Write-Host "instalador: $($installer.FullName)" -ForegroundColor Green
+            if ($installerFile) {
+                Write-Host "instalador: $($installerFile.FullName)" -ForegroundColor Green
             }
         }
     }

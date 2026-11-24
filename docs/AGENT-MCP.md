@@ -310,8 +310,23 @@ arquivo) e há **rate limit de 3 leases/minuto**. HUD ganhou contadores (`· 2c 
 **Ctrl+Alt+Shift+K**. Para testes automatizados, `MAYERDOCK_LEASE_AUTO=1` aprova sem modal
 (QA).
 
-**Próximo:** UIA `Invoke/SetValue`, CDP para browser (`md-gx2`), multi-agente (`md-298`) e
-empacotamento do sidecar no Inno/MSIX (`md-b8m`).
+**Ações por mensagem e browser (v1.5):** `set_text` (`WM_SETTEXT`) e `control_click`
+(`BM_CLICK` com fallback no centro) cobrem o essencial de apps Win32 sem UIA completo.
+`browser_launch` sobe Chrome/Edge com **perfil por porta** (evita conflito de singleton),
+`--remote-debugging-port`, `--user-data-dir` dedicado e as flags anti-throttle
+(`--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding`,
+`--disable-background-timer-throttling`, `--disable-features=CalculateNativeWinOcclusion`);
+headed usa `--window-position=-2400,-2400` (GPU real, fora da tela) e devolve o
+**endpoint CDP** para o agente conectar via Playwright/CDP; headless é opcional com aviso
+de WebGPU/WebGL2. O probe do endpoint usa `curl.exe` (o `TcpStream` do sidecar GUI dava
+timeout no loopback).
+
+**Empacotamento validado:** `.\build.ps1 -Installer -Msix` continua funcionando com o
+sidecar — Inno 2,47 MB e MSIX 0,55 MB (exe 908 KB, deps offline). Corrigido bug do
+`build.ps1` (`$installer` colidia com o switch `-Installer`, como antes com `$msix`).
+
+**Próximo:** UIA COM completo (`IUIAutomation` `Invoke/SetValue`) e bridge CDP dedicada
+(`md-gx2`), multi-agente (`md-298`) e WACK/Store.
 
 ---
 
