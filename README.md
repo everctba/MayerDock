@@ -128,6 +128,12 @@ que harnesses compatíveis (Claude Code, Cursor, DSH) consomem. Integra com o do
 | `list_slots` | Slots do dock (ocupado, hwnd, título, retângulo) — requer o dock aberto |
 | `dock_pin` | Encaixa a janela em um slot do dock **sem ativar** |
 | `dock_unpin` / `dock_release_all` | Libera a janela/ todas as janelas do dock |
+| `list_controls` | Controles (janelas filhas) de uma janela: hwnd, classe, texto, id, enabled, retângulo |
+| `click` | Clique direcionado via `PostMessage` (não move o cursor real); `coords=client\|screen` |
+| `type_text` | Digita via `WM_CHAR` direcionado (sem teclado global) |
+| `send_key` | Tecla direcionada (`enter`, `tab`, `esc`, setas, etc.) |
+| `get_text` | Lê o texto de uma janela/controle (`WM_GETTEXT`) |
+| `wait_for` | Espera título/texto/visibilidade com timeout (sem polling cego) |
 
 Com o dock aberto, a sessão aparece no **HUD** (`● Claude · lendo slots`) e o botão
 **■ Parar** encerra o sidecar (kill switch). Capturas em

@@ -25,20 +25,26 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use serde_json::{json, Value};
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits,
-    GetWindowDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HGDIOBJ,
-    SRCCOPY,
+    GetWindowDC, ReleaseDC, ScreenToClient, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
+    DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
 };
 use windows_sys::Win32::Storage::Xps::PrintWindow;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetWindowLongW, GetWindowRect, GetWindowTextLengthW,
-    GetWindowTextW, GetWindowThreadProcessId, IsWindow, IsWindowVisible, ShowWindow, GWL_EXSTYLE,
-    SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNOACTIVATE, WS_EX_TOOLWINDOW,
+    EnumChildWindows, EnumWindows, GetClassNameW, GetDlgCtrlID, GetWindowLongW, GetWindowRect,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
+    PostMessageW, SendMessageW, ShowWindow, GWL_EXSTYLE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
+    SW_SHOWNOACTIVATE, WM_CHAR, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WS_EX_TOOLWINDOW,
 };
+
+/// `MK_LBUTTON` (windows-sys não expõe direto no módulo de mensagens).
+const MK_LBUTTON: usize = 1;
 
 /// `PW_RENDERFULLCONTENT` (windows-sys não expõe a constante).
 const PW_RENDERFULLCONTENT: u32 = 2;
@@ -195,6 +201,15 @@ fn dock_bye() {
 /// Executa uma tool no dock (erro legível quando o dock não está aberto).
 fn dock_tool(tool: &str, args: Value) -> Result<Value, String> {
     dock()?.call(tool, args)
+}
+
+/// Atualiza a atividade no HUD do dock, se houver conexão (best-effort).
+fn dock_activity_if_connected(text: &str) {
+    unsafe {
+        if let Some(dock) = DOCK.as_mut() {
+            let _ = dock.call("activity", json!({ "text": text }));
+        }
+    }
 }
 
 fn handle(message: &Value, version: &str, _initialized: &mut bool) -> Value {
@@ -354,6 +369,94 @@ fn tools() -> Value {
             "name": "dock_release_all",
             "description": "Libera todas as janelas encaixadas no dock.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        },
+        {
+            "name": "list_controls",
+            "description": "Lista os controles (janelas filhas) de uma janela: hwnd, classe, \
+                texto, id, enabled e retângulo. Base estruturada para clicar/digitar sem pixels.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hwnd": { "type": "integer" },
+                    "title": { "type": "string" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "click",
+            "description": "Clique direcionado (PostMessage, sem mover o cursor real) em um \
+                hwnd. Coordenadas de cliente por padrão; use coords=screen para tela.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hwnd": { "type": "integer" },
+                    "title": { "type": "string" },
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" },
+                    "coords": { "type": "string", "enum": ["client", "screen"] }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "type_text",
+            "description": "Digita texto em um controle/janela via WM_CHAR direcionado (sem \
+                usar o teclado global).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hwnd": { "type": "integer" },
+                    "title": { "type": "string" },
+                    "text": { "type": "string" }
+                },
+                "required": ["text"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "send_key",
+            "description": "Envia uma tecla (WM_KEYDOWN/WM_KEYUP) para a janela, por nome \
+                (enter, tab, esc, space, backspace, delete, up/down/left/right) ou código VK.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hwnd": { "type": "integer" },
+                    "title": { "type": "string" },
+                    "key": { "type": ["string", "integer"] }
+                },
+                "required": ["key"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "get_text",
+            "description": "Lê o texto de uma janela/controle (WM_GETTEXT, fallback título).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hwnd": { "type": "integer" },
+                    "title": { "type": "string" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "wait_for",
+            "description": "Espera uma condição na janela (título contém, texto contém, \
+                visível) com timeout; evita polling cego do agente.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hwnd": { "type": "integer" },
+                    "title": { "type": "string" },
+                    "title_contains": { "type": "string" },
+                    "text_contains": { "type": "string" },
+                    "visible": { "type": "boolean" },
+                    "timeout_ms": { "type": "integer" }
+                },
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -429,6 +532,12 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
             let result = dock_tool("dock_release_all", json!({}))?;
             Ok(vec![text_content(&pretty(&result))])
         }
+        "list_controls" => list_controls(args),
+        "click" => click(args),
+        "type_text" => type_text(args),
+        "send_key" => send_key(args),
+        "get_text" => get_text(args),
+        "wait_for" => wait_for(args),
         _ => Err(format!("tool desconhecida: {name}")),
     }
 }
@@ -732,4 +841,237 @@ fn window_state(args: &Value) -> Result<Vec<Value>, String> {
         hwnd as usize
     ));
     Ok(vec![text_content(&format!("{action}: ok"))])
+}
+
+// ---------------------------------------------------------------------------
+// Controles e input direcionado (PostMessage — sem cursor/teclado global)
+// ---------------------------------------------------------------------------
+
+struct ControlInfo {
+    hwnd: HWND,
+    class: String,
+    text: String,
+    id: i32,
+    enabled: bool,
+    rect: RECT,
+}
+
+fn list_controls(args: &Value) -> Result<Vec<Value>, String> {
+    let hwnd = find_window(args)?;
+    dock_activity_if_connected("lendo controles");
+    let controls = child_controls(hwnd);
+    if controls.is_empty() {
+        return Ok(vec![text_content("(sem controles filhos)")]);
+    }
+    let lines = controls
+        .iter()
+        .map(|control| {
+            format!(
+                "0x{:X}\t{}\t{}\tid={}\tenabled={}\t{}x{} @ ({},{})",
+                control.hwnd as usize,
+                control.class,
+                control.text,
+                control.id,
+                control.enabled,
+                control.rect.right - control.rect.left,
+                control.rect.bottom - control.rect.top,
+                control.rect.left,
+                control.rect.top
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    Ok(vec![text_content(&lines)])
+}
+
+fn child_controls(hwnd: HWND) -> Vec<ControlInfo> {
+    let mut out: Vec<ControlInfo> = Vec::new();
+    unsafe {
+        EnumChildWindows(
+            hwnd,
+            Some(enum_child),
+            &mut out as *mut Vec<ControlInfo> as LPARAM,
+        );
+    }
+    out
+}
+
+unsafe extern "system" fn enum_child(hwnd: HWND, lparam: LPARAM) -> i32 {
+    let out = &mut *(lparam as *mut Vec<ControlInfo>);
+    let mut class = [0u16; 256];
+    let len = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32);
+    let class = String::from_utf16_lossy(&class[..len.max(0) as usize]);
+    let mut rect: RECT = std::mem::zeroed();
+    GetWindowRect(hwnd, &mut rect);
+    out.push(ControlInfo {
+        hwnd,
+        class,
+        text: window_title(hwnd),
+        id: GetDlgCtrlID(hwnd),
+        enabled: IsWindowEnabled(hwnd) != 0,
+        rect,
+    });
+    1
+}
+
+fn click(args: &Value) -> Result<Vec<Value>, String> {
+    let hwnd = find_window(args)?;
+    let x = args.get("x").and_then(Value::as_i64).unwrap_or(0) as i32;
+    let y = args.get("y").and_then(Value::as_i64).unwrap_or(0) as i32;
+    let (cx, cy) = match args.get("coords").and_then(Value::as_str) {
+        Some("screen") => {
+            let mut point = POINT { x, y };
+            unsafe {
+                ScreenToClient(hwnd, &mut point);
+            }
+            (point.x, point.y)
+        }
+        _ => (x, y),
+    };
+    let lparam = (((cy as u16 as u32) << 16) | (cx as u16 as u32)) as isize;
+    dock_activity_if_connected("clicando");
+    unsafe {
+        PostMessageW(hwnd, WM_MOUSEMOVE, 0, lparam);
+        PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam);
+        PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam);
+    }
+    crate::win::log(&format!(
+        "mcp: click hwnd=0x{:X} ({cx},{cy})",
+        hwnd as usize
+    ));
+    Ok(vec![text_content(&format!(
+        "click em 0x{:X} ({cx},{cy})",
+        hwnd as usize
+    ))])
+}
+
+fn type_text(args: &Value) -> Result<Vec<Value>, String> {
+    let hwnd = find_window(args)?;
+    let text = args
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or("informe text")?;
+    dock_activity_if_connected("digitando");
+    for unit in text.encode_utf16() {
+        unsafe {
+            PostMessageW(hwnd, WM_CHAR, unit as usize, 1);
+        }
+    }
+    crate::win::log(&format!(
+        "mcp: type_text hwnd=0x{:X} {} chars",
+        hwnd as usize,
+        text.chars().count()
+    ));
+    Ok(vec![text_content(&format!("digitado em 0x{:X}: {text:?}", hwnd as usize))])
+}
+
+fn send_key(args: &Value) -> Result<Vec<Value>, String> {
+    let hwnd = find_window(args)?;
+    let key = args.get("key").ok_or("informe key")?;
+    let vk: u32 = if let Some(code) = key.as_u64() {
+        code as u32
+    } else {
+        let name = key.as_str().unwrap_or("").to_ascii_lowercase();
+        match name.as_str() {
+            "enter" | "return" => 0x0D,
+            "tab" => 0x09,
+            "esc" | "escape" => 0x1B,
+            "space" => 0x20,
+            "backspace" => 0x08,
+            "delete" | "del" => 0x2E,
+            "up" => 0x26,
+            "down" => 0x28,
+            "left" => 0x25,
+            "right" => 0x27,
+            other => return Err(format!("tecla desconhecida: {other}")),
+        }
+    };
+    dock_activity_if_connected("enviando tecla");
+    unsafe {
+        PostMessageW(hwnd, WM_KEYDOWN, vk as usize, 1);
+        PostMessageW(hwnd, WM_KEYUP, vk as usize, 1);
+    }
+    crate::win::log(&format!(
+        "mcp: send_key hwnd=0x{:X} vk=0x{vk:02X}",
+        hwnd as usize
+    ));
+    Ok(vec![text_content(&format!(
+        "tecla 0x{vk:02X} em 0x{:X}",
+        hwnd as usize
+    ))])
+}
+
+fn get_text(args: &Value) -> Result<Vec<Value>, String> {
+    let hwnd = find_window(args)?;
+    let text = window_message_text(hwnd).unwrap_or_else(|| window_title(hwnd));
+    Ok(vec![text_content(&format!("0x{:X}: {text:?}", hwnd as usize))])
+}
+
+fn window_message_text(hwnd: HWND) -> Option<String> {
+    unsafe {
+        let len = SendMessageW(hwnd, WM_GETTEXTLENGTH, 0, 0) as usize;
+        if len == 0 {
+            return None;
+        }
+        let len = len.min(1 << 20);
+        let mut buffer = vec![0u16; len + 1];
+        let copied = SendMessageW(
+            hwnd,
+            WM_GETTEXT,
+            buffer.len(),
+            buffer.as_mut_ptr() as isize,
+        ) as usize;
+        if copied == 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buffer[..copied]))
+    }
+}
+
+fn wait_for(args: &Value) -> Result<Vec<Value>, String> {
+    let hwnd = find_window(args)?;
+    let timeout = args
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(5000)
+        .clamp(100, 30000);
+    let title_needle = args
+        .get("title_contains")
+        .and_then(Value::as_str)
+        .map(|value| value.to_lowercase());
+    let text_needle = args
+        .get("text_contains")
+        .and_then(Value::as_str)
+        .map(|value| value.to_lowercase());
+    let visible = args.get("visible").and_then(Value::as_bool);
+    if title_needle.is_none() && text_needle.is_none() && visible.is_none() {
+        return Err("informe title_contains, text_contains ou visible".to_string());
+    }
+    dock_activity_if_connected("aguardando condição");
+    let started = std::time::Instant::now();
+    loop {
+        let mut matched = true;
+        if let Some(needle) = &title_needle {
+            matched &= window_title(hwnd).to_lowercase().contains(needle);
+        }
+        if let Some(needle) = &text_needle {
+            let text = window_message_text(hwnd)
+                .unwrap_or_else(|| window_title(hwnd))
+                .to_lowercase();
+            matched &= text.contains(needle);
+        }
+        if let Some(expected) = visible {
+            matched &= (unsafe { IsWindowVisible(hwnd) } != 0) == expected;
+        }
+        if matched {
+            return Ok(vec![text_content(&format!(
+                "condição atingida em {} ms",
+                started.elapsed().as_millis()
+            ))]);
+        }
+        if started.elapsed().as_millis() as u64 >= timeout {
+            return Err(format!("timeout de {timeout} ms"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }

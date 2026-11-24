@@ -287,14 +287,21 @@ Implementado:
   `dock_release_all`;
 - **HUD**: no cabeçalho do dock, `● <agente> · <atividade>` e botão **■ Parar**
   (kill switch) que encerra o processo do sidecar e derruba a sessão;
+- **controles + input direcionado**: `list_controls` (EnumChildWindows), `click`
+  (PostMessage WM_MOUSEMOVE/DOWN/UP, cliente ou tela), `type_text` (WM_CHAR),
+  `send_key` (WM_KEYDOWN/UP), `get_text` (WM_GETTEXT) e `wait_for`
+  (título/texto/visível com timeout);
 - capturas em `%APPDATA%\MayerDock\agent\<pid>\cap-*.png`; log no `mayerdock.log`.
 
 Validado end-to-end (dock + sidecar + Notepad): handshake, sessão no HUD, `list_slots`,
 `open_app`, `dock_pin` (janela 704×517 no slot), captura PNG, `dock_release_all` e
-**kill switch encerrando o sidecar**.
+**kill switch encerrando o sidecar**. Input: `list_controls` achou o `Edit` do Notepad,
+`click` + `type_text` inseriram “MayerDock agent input test” (lido por `get_text` e
+`wait_for`), **sem mover o cursor**.
 
-**Próximo:** input direcionado (UIA `Invoke/SetValue`, PostMessage e CDP para browser),
-`accessibility_tree`/`wait_for` e **focus lease** com modal de aprovação (`md-xc6`).
+**Próximo:** **focus lease** com modal de aprovação (`md-xc6`) e input global
+(`SendInput`) liberado só durante o lease; depois UIA `Invoke/SetValue` e CDP para
+browser (`md-gx2`).
 
 ---
 
