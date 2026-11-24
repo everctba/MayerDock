@@ -1,0 +1,12 @@
+{"jsonrpc":"2.0","id":1,"method":"ping"}
+{"jsonrpc":"2.0","id":"x","method":null}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+not-json
+{"id":1,"method":"tools/call","params":{"name":"capture_window","arguments":{"hwnd":-1}}}
+{"id":2,"method":"tools/call","params":{"name":"type_text","arguments":{"hwnd":-1,"text":"<script>alert(1)</script>"}}}
+{"id":3,"method":"tools/call","params":{"name":"tool-inexistente","arguments":{"x":1}}}
+{}
+[]
+{"id":1,"method":"initialize","params":{"protocolVersion":99}}
+{"id":1,"method":"initialize","params":{"clientInfo":{"name":"\u0000"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"dock_pin","arguments":{"hwnd":0}}}

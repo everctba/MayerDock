@@ -98,9 +98,23 @@ estar pronta.
 
 ## T-002 — Fuzzing do MayerDock (MCP/JSON, named pipe, config.ini, CLI, captura)
 
-- **Status:** pendente (backlog) · **Prioridade:** P2 · **Task no beads:** `md-d33.1`
+- **Status:** em progresso (fuzz-lite implementado) · **Prioridade:** P2 · **Task no beads:** `md-d33.1`
 - **Objetivo:** fuzzar as superfícies que recebem dados **não confiáveis** para encontrar
   panics, crashes, DoS e uso descontrolado de memória — sem quebrar os builds atuais.
+
+### Implementado (fuzz-lite, 2026-11-24)
+
+- Parsers puros extraídos e cobertos por testes: `config::parse_ini`,
+  `mcp::parse_message_line` + `mcp::read_line_capped`, `dock::decode_pipe_line`.
+- Testes em `cargo test` (`.\build.ps1 -Test`): corpus de extremos + ~60 mil entradas
+  aleatórias (deep nesting, bytes inválidos/NUL, 1 MB, oversized), sem panic.
+- `scripts/fuzz_smoke.py`: manda corpus hostil + linha de **5 MB** + JSON profundamente
+  aninhado + UTF-8 inválido no `--mcp` e valida que o sidecar **sobrevive e responde**
+  (`tools/list` = 24 tools). Rodado com sucesso.
+- Correção: leitura do stdin do MCP agora tem **limite de 4 MB por linha** (descarta o
+  excesso sem crescer memória); pipe do dock documentado/testado com limite de 1 MB.
+- Ainda pendente: alvos com `cargo-fuzz`/libFuzzer (bloqueado por toolchain GNU/offline)
+  e rodadas de 10 min por alvo em CI.
 
 ### Alvos (ordem de risco)
 

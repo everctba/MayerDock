@@ -60,6 +60,13 @@ Próxima versão (**1.5**): **Agent Workspace** — o dock como workspace de age
 .\build.ps1 -Shortcut    # + atalho "MayerDock.lnk" na área de trabalho
 .\build.ps1 -Installer   # + instalador Windows em dist\installer\
 .\build.ps1 -Msix        # + pacote MSIX em dist\msix\ (não substitui o instalador)
+.\build.ps1 -Test        # + cargo test (unitários + fuzz-lite)
+```
+
+Testes de robustez do MCP (corpus hostil, payload de 5 MB, JSON profundo e UTF-8 inválido):
+
+```powershell
+python scripts\fuzz_smoke.py
 ```
 
 O build é **offline** e usa apenas `windows-sys` do cache local do Cargo. O `build.ps1`

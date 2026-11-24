@@ -1834,6 +1834,17 @@ fn serve_agent(pipe: HANDLE, hwnd: HWND, token: &str) {
     }
 }
 
+/// Limite de linha no pipe do agente (proteção contra payloads gigantes).
+const MAX_PIPE_LINE: usize = 1 << 20;
+
+/// Converte os bytes de uma linha do pipe em `String` (lossy, sem panic).
+fn decode_pipe_line(bytes: &[u8]) -> Option<String> {
+    if bytes.len() > MAX_PIPE_LINE {
+        return None;
+    }
+    Some(String::from_utf8_lossy(bytes).to_string())
+}
+
 fn read_pipe_line(pipe: HANDLE) -> Option<String> {
     let mut bytes: Vec<u8> = Vec::new();
     let mut buf = [0u8; 1];
@@ -1857,11 +1868,11 @@ fn read_pipe_line(pipe: HANDLE) -> Option<String> {
         if buf[0] != b'\r' {
             bytes.push(buf[0]);
         }
-        if bytes.len() > 1 << 20 {
+        if bytes.len() > MAX_PIPE_LINE {
             return None;
         }
     }
-    Some(String::from_utf8_lossy(&bytes).to_string())
+    decode_pipe_line(&bytes)
 }
 
 fn write_pipe_line(pipe: HANDLE, value: &Value) -> Option<()> {
@@ -2479,5 +2490,56 @@ unsafe extern "system" fn dock_proc(
             0
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+#[cfg(test)]
+mod fuzz_tests {
+    use super::*;
+
+    fn rng(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *state = x;
+        x
+    }
+
+    #[test]
+    fn decode_pipe_line_corpus_extremos() {
+        let cases: &[&[u8]] = &[
+            b"",
+            b"{}",
+            b"\x00\x00\x00",
+            b"{\"id\":1,\"tool\":\"auth\"}",
+            b"\xff\xfe\xfd invalid utf8",
+            b"{\"tool\":\"dock_pin\",\"args\":{\"hwnd\":-1}}",
+            b"\r\n",
+        ];
+        for bytes in cases {
+            let _ = decode_pipe_line(bytes);
+        }
+        // No limite e acima dele.
+        assert!(decode_pipe_line(&vec![b'a'; MAX_PIPE_LINE]).is_some());
+        assert!(decode_pipe_line(&vec![b'a'; MAX_PIPE_LINE + 1]).is_none());
+    }
+
+    #[test]
+    fn decode_pipe_line_fuzz_random_never_panics() {
+        let mut state = 0x1234_ABCD_5678_EF90u64;
+        for _ in 0..20_000 {
+            let len = (rng(&mut state) as usize) % 2048;
+            let mut bytes = Vec::with_capacity(len);
+            for _ in 0..len {
+                bytes.push((rng(&mut state) % 256) as u8);
+            }
+            let decoded = decode_pipe_line(&bytes);
+            if let Some(text) = decoded {
+                // Lossy pode expandir bytes inválidos para U+FFFD (3 bytes), mas
+                // o número de caracteres nunca passa do número de bytes.
+                assert!(text.chars().count() <= bytes.len());
+            }
+        }
     }
 }

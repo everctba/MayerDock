@@ -14,12 +14,14 @@
         .\build.ps1 -Shortcut    # + atalho na área de trabalho
         .\build.ps1 -Installer   # + instalador (Inno Setup) em dist\installer\
         .\build.ps1 -Msix        # + pacote MSIX em dist\msix\ (não substitui o instalador)
+        .\build.ps1 -Test        # + cargo test (testes unitários e fuzz-lite)
 #>
 param(
     [switch]$Run,
     [switch]$Shortcut,
     [switch]$Installer,
-    [switch]$Msix
+    [switch]$Msix,
+    [switch]$Test
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,6 +74,7 @@ function Find-X64Gcc {
 try {
     # stderr do cargo (progresso) não pode virar erro terminante no PowerShell 5.1
     $ErrorActionPreference = 'Continue'
+    $cargoArgs = @()
 
     if (Get-Command link.exe -ErrorAction SilentlyContinue) {
         & cargo build --release --offline
@@ -86,6 +89,7 @@ try {
             throw 'Toolchain x86_64-pc-windows-gnu não instalado (rustup toolchain install stable-x86_64-pc-windows-gnu).'
         }
         $gnu = ($gnu -split '\s+')[0]
+        $cargoArgs = @("+$gnu")
         $binDir = Split-Path $gcc -Parent
         $env:PATH = "$binDir;$env:PATH"
         $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = $gcc
@@ -119,10 +123,17 @@ try {
         }
 
         Write-Host "[mayerdock] cargo +$gnu build --release --offline (gcc: $gcc)" -ForegroundColor DarkGray
-        & cargo "+$gnu" build --release --offline 2>&1 | ForEach-Object { Write-Host $_ }
+        & cargo @cargoArgs build --release --offline 2>&1 | ForEach-Object { Write-Host $_ }
     }
 
     if ($LASTEXITCODE -ne 0) { throw "cargo falhou (exit $LASTEXITCODE)." }
+
+    if ($Test) {
+        Write-Host '[mayerdock] cargo test (unitarios + fuzz-lite)...' -ForegroundColor DarkGray
+        & cargo @cargoArgs test --release --offline 2>&1 | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) { throw "cargo test falhou (exit $LASTEXITCODE)." }
+        Write-Host 'OK: testes' -ForegroundColor Green
+    }
 
     $exe = Join-Path $root 'target\release\mayerdock.exe'
     if (-not (Test-Path $exe)) { throw "binário não gerado: $exe" }

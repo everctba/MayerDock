@@ -65,43 +65,121 @@ impl Config {
     /// Lê o `config.ini` (ausente/inválido → padrões). Aceita `width`
     /// (formato antigo, físico) apenas para migração.
     pub fn load() -> Config {
-        let mut cfg = Config::default();
-        let mut has_logical = false;
-        let mut legacy: Option<i32> = None;
+        match std::fs::read_to_string(config_path()) {
+            Ok(text) => parse_ini(&text),
+            Err(_) => Config::default(),
+        }
+    }
+}
 
-        if let Ok(text) = std::fs::read_to_string(config_path()) {
-            for line in text.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
-                    continue;
-                }
-                let Some((key, value)) = line.split_once('=') else {
-                    continue;
-                };
-                let key = key.trim();
-                if key.eq_ignore_ascii_case("width_logical") {
-                    if let Ok(n) = value.trim().parse::<i32>() {
-                        cfg.width = n.clamp(MIN_WIDTH, MAX_WIDTH);
-                        has_logical = true;
-                    }
-                } else if key.eq_ignore_ascii_case("width") {
-                    if let Ok(n) = value.trim().parse::<i32>() {
-                        legacy = Some(n);
-                    }
-                } else if key.eq_ignore_ascii_case("slots") {
-                    if let Ok(n) = value.trim().parse::<usize>() {
-                        cfg.slots = n.clamp(1, 3);
-                    }
-                }
+/// Parser puro do `config.ini` (sem I/O), separado para fuzz/testes.
+pub(crate) fn parse_ini(text: &str) -> Config {
+    let mut cfg = Config::default();
+    let mut has_logical = false;
+    let mut legacy: Option<i32> = None;
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.eq_ignore_ascii_case("width_logical") {
+            if let Ok(n) = value.trim().parse::<i32>() {
+                cfg.width = n.clamp(MIN_WIDTH, MAX_WIDTH);
+                has_logical = true;
+            }
+        } else if key.eq_ignore_ascii_case("width") {
+            if let Ok(n) = value.trim().parse::<i32>() {
+                legacy = Some(n);
+            }
+        } else if key.eq_ignore_ascii_case("slots") {
+            if let Ok(n) = value.trim().parse::<usize>() {
+                cfg.slots = n.clamp(1, 3);
             }
         }
-
-        if !has_logical {
-            cfg.legacy_width = legacy;
-        }
-        cfg
     }
 
+    if !has_logical {
+        cfg.legacy_width = legacy;
+    }
+    cfg
+}
+
+#[cfg(test)]
+mod fuzz_tests {
+    use super::*;
+
+    fn rng(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *state = x;
+        x
+    }
+
+    fn random_text(state: &mut u64, max_len: usize) -> String {
+        let len = (rng(state) as usize) % (max_len + 1);
+        let mut bytes = Vec::with_capacity(len);
+        for _ in 0..len {
+            let value = (rng(state) % 256) as u8;
+            bytes.push(value);
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    fn check(cfg: &Config) {
+        assert!(
+            (MIN_WIDTH..=MAX_WIDTH).contains(&cfg.width),
+            "width fora do limite: {}",
+            cfg.width
+        );
+        assert!(
+            (1..=3).contains(&cfg.slots),
+            "slots fora do limite: {}",
+            cfg.slots
+        );
+    }
+
+    #[test]
+    fn parse_ini_corpus_extremos() {
+        let corpus = [
+            "",
+            "\0\0\0",
+            "width_logical",
+            "width_logical=",
+            "=2147483647",
+            "width_logical=2147483647",
+            "width_logical=-2147483648",
+            "slots=999999",
+            "slots=0",
+            "width=9999999999",
+            "width=-9999999999",
+            "\u{feff}width_logical=772\r\nslots=2\r\n",
+            "# comentário\n; outro\nwidth_logical=300\n",
+            "width_logical=240\r\nslots=3\r\nwidth_logical=1200",
+        ];
+        for text in corpus {
+            check(&parse_ini(text));
+        }
+        check(&parse_ini(&"A".repeat(1024 * 1024)));
+    }
+
+    #[test]
+    fn parse_ini_fuzz_random_never_panics() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..20_000 {
+            let text = random_text(&mut state, 512);
+            check(&parse_ini(&text));
+        }
+    }
+}
+
+impl Config {
     /// Grava o `config.ini` de forma atômica (tmp + rename).
     pub fn save(&self) {
         let dir = data_dir();

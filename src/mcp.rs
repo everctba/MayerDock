@@ -57,22 +57,86 @@ static mut CAPTURES: u32 = 0;
 /// `PW_RENDERFULLCONTENT` (windows-sys não expõe a constante).
 const PW_RENDERFULLCONTENT: u32 = 2;
 
+/// Limite de linha do MCP stdio (proteção contra payloads gigantes).
+const MAX_MCP_LINE: usize = 4 * 1024 * 1024;
+
+/// Lê uma linha com limite de tamanho.
+///
+/// `Ok(None)` = EOF; `Ok(Some(vazio))` = linha oversized descartada (o resto
+/// foi consumido até o `\n`, sem crescer memória).
+fn read_line_capped<R: BufRead>(reader: &mut R, cap: usize) -> std::io::Result<Option<Vec<u8>>> {
+    let mut buffer: Vec<u8> = Vec::new();
+    loop {
+        let (data, consumed, newline) = {
+            let chunk = reader.fill_buf()?;
+            if chunk.is_empty() {
+                return Ok(if buffer.is_empty() {
+                    None
+                } else {
+                    Some(buffer)
+                });
+            }
+            match chunk.iter().position(|&b| b == b'\n') {
+                Some(pos) => (chunk[..pos].to_vec(), pos + 1, true),
+                None => (chunk.to_vec(), chunk.len(), false),
+            }
+        };
+        buffer.extend_from_slice(&data);
+        reader.consume(consumed);
+        if newline {
+            if buffer.len() > cap {
+                return Ok(Some(Vec::new()));
+            }
+            return Ok(Some(buffer));
+        }
+        if buffer.len() > cap {
+            // Consome o resto da linha oversized sem guardar o conteúdo.
+            loop {
+                let (consumed, newline) = {
+                    let chunk = reader.fill_buf()?;
+                    if chunk.is_empty() {
+                        return Ok(None);
+                    }
+                    match chunk.iter().position(|&b| b == b'\n') {
+                        Some(pos) => (pos + 1, true),
+                        None => (chunk.len(), false),
+                    }
+                };
+                reader.consume(consumed);
+                if newline {
+                    return Ok(Some(Vec::new()));
+                }
+            }
+        }
+    }
+}
+
+fn parse_message_line(line: &str) -> Result<Value, String> {
+    serde_json::from_str(line).map_err(|err| err.to_string())
+}
+
 pub fn serve(version: &str) -> i32 {
     crate::win::log("mcp: sidecar iniciado (stdio)");
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let mut initialized = false;
+    let mut reader = stdin.lock();
 
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(line) => line,
+    loop {
+        let raw = match read_line_capped(&mut reader, MAX_MCP_LINE) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => break,
             Err(_) => break,
         };
-        let line = line.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&raw);
+        let line = text.trim();
         if line.is_empty() {
             continue;
         }
-        let message: Value = match serde_json::from_str(line) {
+        let message: Value = match parse_message_line(line) {
             Ok(value) => value,
             Err(err) => {
                 crate::win::log(&format!("mcp: JSON inválido: {err}"));
@@ -1705,4 +1769,124 @@ if ('{action}' -eq 'set') {{
         "uia {action} {name:?} em 0x{:X}: {out}",
         hwnd as usize
     ))])
+}
+
+#[cfg(test)]
+mod fuzz_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn rng(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *state = x;
+        x
+    }
+
+    fn random_bytes(state: &mut u64, max_len: usize) -> Vec<u8> {
+        let len = (rng(state) as usize) % (max_len + 1);
+        let mut bytes = Vec::with_capacity(len);
+        for _ in 0..len {
+            bytes.push((rng(state) % 256) as u8);
+        }
+        bytes
+    }
+
+    #[test]
+    fn parse_message_line_corpus_extremos() {
+        let deep = format!("{}{}", "[".repeat(2000), "]".repeat(2000));
+        let corpus = [
+            "",
+            "{}",
+            "null",
+            "[]",
+            "{",
+            "}",
+            "\"x\"",
+            "{\"id\":1,\"method\":\"initialize\"}",
+            "{\"id\":\"x\",\"method\":\"ping\"}",
+            "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"status\",\"arguments\":{}}}",
+            "{\"id\":1,\"method\":\"nope\"}",
+            "{\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":123}}",
+            "{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":null}}}",
+            "{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"\u{0}\"}}}",
+            deep.as_str(),
+        ];
+        for text in corpus {
+            let _ = parse_message_line(text);
+        }
+    }
+
+    #[test]
+    fn parse_message_line_fuzz_random_never_panics() {
+        let mut state = 0xDEAD_BEEF_1234_5678u64;
+        for _ in 0..20_000 {
+            let bytes = random_bytes(&mut state, 256);
+            let text = String::from_utf8_lossy(&bytes);
+            let _ = parse_message_line(&text);
+        }
+    }
+
+    #[test]
+    fn handle_mensagens_de_controle_never_panics() {
+        let mut initialized = false;
+        let messages = [
+            json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+            json!({"jsonrpc": "2.0", "id": 3, "method": "desconhecido"}),
+            json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "tool-inexistente", "arguments": {}}}),
+            json!({"jsonrpc": "2.0", "id": 5}),
+            json!({"jsonrpc": "2.0", "id": null, "method": "ping"}),
+        ];
+        for message in messages {
+            let response = handle(&message, "0.1.0", &mut initialized);
+            let _ = serde_json::to_string(&response).unwrap();
+        }
+    }
+
+    #[test]
+    fn read_line_capped_behaves() {
+        let mut cursor = Cursor::new(b"a\n\nb".to_vec());
+        assert_eq!(
+            read_line_capped(&mut cursor, 16).unwrap(),
+            Some(b"a".to_vec())
+        );
+        assert_eq!(read_line_capped(&mut cursor, 16).unwrap(), Some(Vec::new()));
+        assert_eq!(
+            read_line_capped(&mut cursor, 16).unwrap(),
+            Some(b"b".to_vec())
+        );
+        assert_eq!(read_line_capped(&mut cursor, 16).unwrap(), None);
+
+        let mut input = vec![b'x'; 100];
+        input.push(b'\n');
+        input.extend_from_slice(b"ok\n");
+        let mut cursor = Cursor::new(input);
+        assert_eq!(read_line_capped(&mut cursor, 32).unwrap(), Some(Vec::new()));
+        assert_eq!(
+            read_line_capped(&mut cursor, 32).unwrap(),
+            Some(b"ok".to_vec())
+        );
+
+        // Linha gigante sem newline (EOF) não explode nem cresce sem limite.
+        let mut cursor = Cursor::new(vec![b'y'; 100_000]);
+        assert_eq!(read_line_capped(&mut cursor, 64).unwrap(), None);
+    }
+
+    #[test]
+    fn read_line_capped_fuzz_random_never_panics() {
+        let mut state = 0x0BAD_C0DE_5EED_1234u64;
+        for _ in 0..2_000 {
+            let bytes = random_bytes(&mut state, 4096);
+            let mut cursor = Cursor::new(bytes);
+            let mut count = 0;
+            while let Ok(Some(line)) = read_line_capped(&mut cursor, 256) {
+                let _ = line.len();
+                count += 1;
+                assert!(count < 10_000);
+            }
+        }
+    }
 }
