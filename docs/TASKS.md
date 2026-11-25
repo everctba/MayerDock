@@ -235,3 +235,21 @@ estar pronta.
 Cada task tem descrição e critérios de aceite no beads (`bd show <id>`). Ordem sugerida:
 guardrails → pair testing → workspaces → borda de foco → divisórias → launcher → tema →
 badge → confetti.
+
+---
+
+## T-005 — Auditoria visual: linha do tempo exportável (executar por último)
+
+- **Status:** backlog · **Prioridade:** **P4 (última)** · **Task no beads:** `md-jcf.3`
+- **Objetivo:** exportar “o que o agente viu/fez” (eventos MCP + frames/screenshots +
+  timestamps) como linha do tempo para QA/auditoria.
+- **Decisão de escopo:** **não reimplementar captura de tela** — o usuário já tem um
+  software de gravação (nome a confirmar; “avifnim?” não reconhecido). A task deve
+  **integrar**: exportar timeline JSON/CSV alinhada por timestamp (ou marcadores/capítulos
+  no formato do gravador) e usar `capture_window` apenas como fallback de frames.
+- **Inclui:** export JSON + HTML/Markdown navegável, filtro por sessão/agente, redaction de
+  janelas sensíveis (depende de `md-d33.3.8`), retenção/limpeza, CLI
+  `--audit export --session <id> --out <dir>`.
+- **Aceite:** sessão exportada com eventos+frames, timeline legível, formato de
+  sincronização documentado para o gravador externo, redaction, sem duplicar captura,
+  docs e testes.
