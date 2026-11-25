@@ -46,6 +46,10 @@ pub struct Config {
     pub width: i32,
     /// Quantas divisões verticais o dock tem (1–3).
     pub slots: usize,
+    /// Fim da 1ª divisão em % da área útil (só slots ≥ 2).
+    pub split0: i32,
+    /// Fim da 2ª divisão em % da área útil (só slots == 3; > split0).
+    pub split1: i32,
     /// Largura física de uma config antiga (antes do suporte a DPI), só para
     /// migrar: é convertida para lógica na inicialização e não é salva.
     pub legacy_width: Option<i32>,
@@ -56,6 +60,8 @@ impl Default for Config {
         Config {
             width: DEFAULT_WIDTH,
             slots: DEFAULT_SLOTS,
+            split0: 50,
+            split1: 67,
             legacy_width: None,
         }
     }
@@ -100,7 +106,25 @@ pub(crate) fn parse_ini(text: &str) -> Config {
             if let Ok(n) = value.trim().parse::<usize>() {
                 cfg.slots = n.clamp(1, 3);
             }
+        } else if key.eq_ignore_ascii_case("splits") {
+            let parts: Vec<i32> = value
+                .split(',')
+                .filter_map(|part| part.trim().parse::<i32>().ok())
+                .collect();
+            if let Some(first) = parts.first() {
+                cfg.split0 = (*first).clamp(1, 99);
+            }
+            if let Some(second) = parts.get(1) {
+                cfg.split1 = (*second).clamp(1, 99);
+            }
         }
+    }
+
+    // Normaliza as divisórias (percentuais da área útil, sempre crescentes).
+    cfg.split0 = cfg.split0.clamp(10, 90);
+    cfg.split1 = cfg.split1.clamp(10, 90);
+    if cfg.split0 >= cfg.split1 {
+        cfg.split1 = (cfg.split0 + 10).min(90);
     }
 
     if !has_logical {
@@ -143,6 +167,16 @@ mod fuzz_tests {
             "slots fora do limite: {}",
             cfg.slots
         );
+        assert!(
+            (10..=90).contains(&cfg.split0),
+            "split0 fora do limite: {}",
+            cfg.split0
+        );
+        assert!(
+            (10..=90).contains(&cfg.split1),
+            "split1 fora do limite: {}",
+            cfg.split1
+        );
     }
 
     #[test]
@@ -184,12 +218,18 @@ impl Config {
     pub fn save(&self) {
         let dir = data_dir();
         let _ = std::fs::create_dir_all(&dir);
+        let splits = match self.slots {
+            2 => format!("\r\nsplits={}", self.split0),
+            3 => format!("\r\nsplits={},{}", self.split0, self.split1),
+            _ => String::new(),
+        };
         let text = format!(
             "# MayerDock — configuração\r\n\
              # width_logical em pixels lógicos (96 dpi); o app escala pelo DPI do monitor\r\n\
+             # splits = fim de cada divisão em % da área útil (só com 2 ou 3 slots)\r\n\
              width_logical={}\r\n\
-             slots={}\r\n",
-            self.width, self.slots
+             slots={}{}\r\n",
+            self.width, self.slots, splits
         );
         let tmp = dir.join("config.ini.tmp");
         if std::fs::write(&tmp, text.as_bytes()).is_ok() {

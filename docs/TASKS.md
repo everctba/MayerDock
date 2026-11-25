@@ -250,9 +250,11 @@ badge → confetti.
 
 **Já implementado nesta lista:** `md-d33.3.8` Guardrails (blocklist/redaction/auditoria),
 `md-d33.3.5` Borda de foco por sessão (azul sem sessão, cor por agente, âmbar no lease;
-validado por `scripts/focus_border_smoke.py`) e `md-d33.3.7` Pair testing (botão ✋/▶ no
+validado por `scripts/focus_border_smoke.py`), `md-d33.3.7` Pair testing (botão ✋/▶ no
 HUD, gate das tools do agente e tool `control_status`; validado por
-`scripts/pair_testing_smoke.py`).
+`scripts/pair_testing_smoke.py`), `md-d33.3.11` PreviewSession (Unit of Work + Memento:
+commit atômico, cancel por Esc, undo/redo) e `md-d33.3.2` divisórias arrastáveis
+(percentuais `splits=` no config; validados por `scripts/layout_session_smoke.py`).
 
 ---
 

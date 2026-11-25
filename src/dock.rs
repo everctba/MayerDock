@@ -47,13 +47,14 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     IsWindow, IsWindowVisible, KillTimer, LoadCursorW, LoadIconW, MessageBoxW, PostMessageW,
     PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SendMessageW, SetCursor,
     SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage,
-    EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZEWE,
-    IDI_APPLICATION, IDYES, MB_ICONQUESTION, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST,
-    MB_YESNO, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE,
-    SW_SHOWNOACTIVATE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_CREATE,
-    WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR,
-    WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZENS,
+    IDC_SIZEWE, IDI_APPLICATION, IDYES, MB_ICONQUESTION, MB_ICONWARNING, MB_SETFOREGROUND,
+    MB_TOPMOST, MB_YESNO, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
+    SW_RESTORE, SW_SHOWNOACTIVATE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE,
+    WM_CREATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP,
+    WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 
 use serde_json::{json, Value};
@@ -72,6 +73,12 @@ const MAX_W: i32 = 1200;
 const TIMER_TICK: usize = 1;
 const HOTKEY_ID: i32 = 1;
 const HOTKEY_STOP_ID: i32 = 2;
+/// Undo/redo de layout (Memento) e cancelamento de edição.
+const HOTKEY_UNDO_ID: i32 = 3;
+const HOTKEY_REDO_ID: i32 = 4;
+const HOTKEY_CANCEL_ID: i32 = 5;
+const VK_Z: u32 = 0x5A;
+const VK_ESCAPE: u32 = 0x1B;
 const VK_M: u32 = 0x4D;
 const VK_K: u32 = 0x4B;
 
@@ -137,6 +144,13 @@ struct Lease {
     until: std::time::Instant,
 }
 
+#[derive(Clone, Copy)]
+struct LayoutSnapshot {
+    width: i32,
+    split0: i32,
+    split1: i32,
+}
+
 struct State {
     hwnd: HWND,
     abd: APPBARDATA,
@@ -144,6 +158,10 @@ struct State {
     busy: bool,
     /// Largura em pixels lógicos (96 dpi); ver `physical_width()`.
     width: i32,
+    /// Fim da 1ª divisão em % da área útil (2 ou 3 slots).
+    split0: i32,
+    /// Fim da 2ª divisão em % da área útil (3 slots).
+    split1: i32,
     /// DPI efetivo do monitor do dock (96 = 100%).
     dpi: u32,
     /// dpi / 96.
@@ -155,6 +173,13 @@ struct State {
     resizing: bool,
     resize_start_x: i32,
     resize_start_w: i32,
+    /// Divisória sendo arrastada (índice da fronteira entre slots).
+    drag_split: Option<usize>,
+    /// Snapshot do início da edição atual (Unit of Work).
+    edit_pre: Option<LayoutSnapshot>,
+    /// Pilhas de undo/redo (Memento) por commit de layout.
+    undo_stack: Vec<LayoutSnapshot>,
+    redo_stack: Vec<LayoutSnapshot>,
     slot_count: usize,
     slots: Vec<Option<Slot>>,
     picking: Vec<HWND>,
@@ -234,7 +259,7 @@ fn make_font(size_logical: i32, weight: i32, scale: f64) -> HFONT {
 }
 
 impl State {
-    fn new(hwnd: HWND, width: i32, slot_count: usize, dpi: u32) -> State {
+    fn new(hwnd: HWND, width: i32, slot_count: usize, dpi: u32, split0: i32, split1: i32) -> State {
         let slot_count = slot_count.clamp(1, 3);
         let dpi = dpi.clamp(48, 480);
         let scale = dpi as f64 / 96.0;
@@ -244,6 +269,8 @@ impl State {
             registered: false,
             busy: false,
             width,
+            split0: split0.clamp(10, 90),
+            split1: split1.clamp(10, 90),
             dpi,
             scale,
             hidden: false,
@@ -252,6 +279,10 @@ impl State {
             resizing: false,
             resize_start_x: 0,
             resize_start_w: width,
+            drag_split: None,
+            edit_pre: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             slot_count,
             slots: vec![None; slot_count],
             picking: Vec::new(),
@@ -402,17 +433,19 @@ pub fn run(cfg: Config) -> i32 {
     }
 
     unsafe {
-        STATE = Some(State::new(hwnd, width_logical, cfg.slots, dpi));
+        STATE = Some(State::new(
+            hwnd,
+            width_logical,
+            cfg.slots,
+            dpi,
+            cfg.split0,
+            cfg.split1,
+        ));
         let s = st();
 
         // Persiste no formato novo (width_logical) se veio de config antiga.
         if cfg.legacy_width.is_some() {
-            Config {
-                width: s.width,
-                slots: s.slot_count,
-                legacy_width: None,
-            }
-            .save();
+            save_layout(s);
         }
 
         register_appbar(s);
@@ -434,6 +467,34 @@ pub fn run(cfg: Config) -> i32 {
         );
         if stop_hotkey == 0 {
             win::log("aviso: Ctrl+Alt+Shift+K (parar agente) não registrado");
+        }
+        // Undo/redo de layout e cancelamento da edição (PreviewSession).
+        let undo_hotkey = RegisterHotKey(
+            hwnd,
+            HOTKEY_UNDO_ID,
+            MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+            VK_Z,
+        );
+        if undo_hotkey == 0 {
+            win::log("aviso: Ctrl+Alt+Z (undo layout) não registrado");
+        }
+        let redo_hotkey = RegisterHotKey(
+            hwnd,
+            HOTKEY_REDO_ID,
+            MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT,
+            VK_Z,
+        );
+        if redo_hotkey == 0 {
+            win::log("aviso: Ctrl+Alt+Shift+Z (redo layout) não registrado");
+        }
+        let cancel_hotkey = RegisterHotKey(
+            hwnd,
+            HOTKEY_CANCEL_ID,
+            MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT,
+            VK_ESCAPE,
+        );
+        if cancel_hotkey == 0 {
+            win::log("aviso: Ctrl+Alt+Shift+Esc (cancelar edição) não registrado");
         }
 
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -607,17 +668,117 @@ fn content_rect(s: &State) -> RECT {
 /// Retângulo da divisão `index` (empilhamento vertical, 1–3).
 fn slot_rect(s: &State, index: usize) -> RECT {
     let c = content_rect(s);
-    let n = s.slot_count.max(1) as i32;
+    let n = s.slot_count.max(1);
     let gap = px(s, 4);
-    let total = (c.bottom - c.top).max(n);
-    let each = ((total - gap * (n - 1)) / n).max(px(s, 40));
-    let top = c.top + index as i32 * (each + gap);
+    let total = (c.bottom - c.top).max(n as i32);
+    let usable = (total - gap * (n as i32 - 1)).max(n as i32);
+    let heights = slot_heights(s, usable);
+    let top = c.top + heights[..index].iter().sum::<i32>() + gap * index as i32;
     RECT {
         left: c.left,
         top,
         right: c.right,
-        bottom: top + each,
+        bottom: top + heights[index],
     }
+}
+
+/// Alturas (px físicos) de cada slot a partir dos percentuais e da área útil.
+fn slot_heights(s: &State, usable: i32) -> [i32; 3] {
+    let usable = usable.max(3);
+    match s.slot_count.max(1) {
+        1 => [usable, 0, 0],
+        2 => {
+            let first = (usable * s.split0 / 100).clamp(1, usable - 1);
+            [first, usable - first, 0]
+        }
+        _ => {
+            let first = (usable * s.split0 / 100).clamp(1, usable - 2);
+            let second = (usable * s.split1 / 100).clamp(first + 1, usable - 1);
+            [first, second - first, usable - second]
+        }
+    }
+}
+
+/// Unit of Work: snapshot do início de uma edição de layout.
+fn layout_snapshot(s: &State) -> LayoutSnapshot {
+    LayoutSnapshot {
+        width: s.width,
+        split0: s.split0,
+        split1: s.split1,
+    }
+}
+
+fn begin_edit(s: &mut State) {
+    if s.edit_pre.is_none() {
+        s.edit_pre = Some(layout_snapshot(s));
+    }
+}
+
+/// Commit atômico: persiste config (tmp+rename) e empilha o snapshot para undo.
+fn commit_edit(s: &mut State) {
+    if let Some(pre) = s.edit_pre.take() {
+        s.undo_stack.push(pre);
+        if s.undo_stack.len() > 32 {
+            s.undo_stack.remove(0);
+        }
+        s.redo_stack.clear();
+        save_layout(s);
+        win::log(&format!(
+            "layout commit: width={} splits={},{} (undo={})",
+            s.width,
+            s.split0,
+            s.split1,
+            s.undo_stack.len()
+        ));
+    }
+}
+
+fn apply_snapshot(s: &mut State, snapshot: LayoutSnapshot) {
+    s.width = snapshot.width;
+    s.split0 = snapshot.split0;
+    s.split1 = snapshot.split1;
+    apply_appbar(s);
+    sync_slot(s, true);
+    unsafe {
+        InvalidateRect(s.hwnd, ptr::null(), 0);
+    }
+}
+
+/// Cancel: restaura o snapshot sem gravar (Esc durante o arrasto).
+fn cancel_edit(s: &mut State) {
+    if let Some(pre) = s.edit_pre.take() {
+        apply_snapshot(s, pre);
+        win::log("layout cancelado (Esc): estado restaurado, nada gravado");
+    }
+}
+
+fn undo_layout(s: &mut State) {
+    if let Some(previous) = s.undo_stack.pop() {
+        s.redo_stack.push(layout_snapshot(s));
+        apply_snapshot(s, previous);
+        save_layout(s);
+        win::log("layout undo");
+    }
+}
+
+fn redo_layout(s: &mut State) {
+    if let Some(next) = s.redo_stack.pop() {
+        s.undo_stack.push(layout_snapshot(s));
+        apply_snapshot(s, next);
+        save_layout(s);
+        win::log("layout redo");
+    }
+}
+
+fn save_layout(s: &State) {
+    Config {
+        width: s.width,
+        slots: s.slot_count,
+        split0: s.split0,
+        split1: s.split1,
+        legacy_width: None,
+    }
+    .save();
 }
 
 fn slot_label(index: usize, count: usize) -> &'static str {
@@ -880,6 +1041,8 @@ fn set_slot_count(s: &mut State, count: usize) {
     Config {
         width: s.width,
         slots: s.slot_count,
+        split0: s.split0,
+        split1: s.split1,
         legacy_width: None,
     }
     .save();
@@ -1285,8 +1448,9 @@ fn on_lbutton_down(s: &mut State, lparam: LPARAM) {
     // Só o arrasto da borda esquerda começa no botão pressionado; cliques em
     // botões/menu são tratados no WM_LBUTTONUP (senão o próprio LBUTTONUP do
     // clique dispensa o menu que acabou de abrir).
-    let (x, _y) = client_point(lparam);
+    let (x, y) = client_point(lparam);
     if x <= px(s, EDGE_GRAB) {
+        begin_edit(s);
         s.resizing = true;
         let mut p = POINT { x: 0, y: 0 };
         unsafe {
@@ -1295,6 +1459,26 @@ fn on_lbutton_down(s: &mut State, lparam: LPARAM) {
         }
         s.resize_start_x = p.x;
         s.resize_start_w = s.width;
+        return;
+    }
+    // Divisórias arrastáveis: pega a fronteira entre slots se o clique estiver
+    // perto dela (abaixo do cabeçalho).
+    if y > px(s, HEADER_H) && s.slot_count > 1 {
+        let c = content_rect(s);
+        let gap = px(s, 4);
+        for boundary in 0..s.slot_count - 1 {
+            let rect = slot_rect(s, boundary);
+            let center = rect.bottom + gap / 2;
+            if (y - center).abs() <= px(s, 7).max(3) && x >= c.left && x <= c.right {
+                begin_edit(s);
+                s.drag_split = Some(boundary);
+                unsafe {
+                    SetCapture(s.hwnd);
+                }
+                win::log(&format!("divisória {boundary}: arrasto iniciado"));
+                return;
+            }
+        }
     }
 }
 
@@ -1304,17 +1488,20 @@ fn on_lbutton_up(s: &mut State, lparam: LPARAM) {
         unsafe {
             ReleaseCapture();
         }
-        Config {
-            width: s.width,
-            slots: s.slot_count,
-            legacy_width: None,
-        }
-        .save();
+        commit_edit(s);
         win::log(&format!(
             "largura salva: {} lógicos ({} físicos)",
             s.width,
             s.physical_width()
         ));
+        return;
+    }
+    if s.drag_split.take().is_some() {
+        unsafe {
+            ReleaseCapture();
+        }
+        commit_edit(s);
+        win::log(&format!("divisórias salvas: {},{}", s.split0, s.split1));
         return;
     }
 
@@ -1351,6 +1538,30 @@ fn on_lbutton_up(s: &mut State, lparam: LPARAM) {
 }
 
 fn on_mouse_move(s: &mut State) {
+    if let Some(boundary) = s.drag_split {
+        let (_, y) = cursor_point();
+        let c = content_rect(s);
+        let gap = px(s, 4);
+        let usable = (c.bottom - c.top - gap * (s.slot_count as i32 - 1)).max(1);
+        let percent = (((y - c.top) as f64 / usable as f64) * 100.0).round() as i32;
+        // Mínimo de ~12% por slot; mantém percentuais crescentes.
+        const MIN_PCT: i32 = 12;
+        if boundary == 0 {
+            let max = if s.slot_count >= 3 {
+                s.split1 - MIN_PCT
+            } else {
+                100 - MIN_PCT
+            };
+            s.split0 = percent.clamp(MIN_PCT, max.max(MIN_PCT));
+        } else {
+            s.split1 = percent.clamp(s.split0 + MIN_PCT, 100 - MIN_PCT);
+        }
+        sync_slot(s, true);
+        unsafe {
+            InvalidateRect(s.hwnd, ptr::null(), 0);
+        }
+        return;
+    }
     if !s.resizing {
         return;
     }
@@ -1366,6 +1577,14 @@ fn on_mouse_move(s: &mut State) {
     }
 }
 
+fn cursor_point() -> (i32, i32) {
+    let mut p = POINT { x: 0, y: 0 };
+    unsafe {
+        GetCursorPos(&mut p);
+    }
+    (p.x, p.y)
+}
+
 fn set_cursor(hwnd: HWND, s: &State) {
     unsafe {
         let mut p = POINT { x: 0, y: 0 };
@@ -1374,6 +1593,18 @@ fn set_cursor(hwnd: HWND, s: &State) {
         GetWindowRect(hwnd, &mut rc);
         let cursor = if p.x - rc.left <= px(s, EDGE_GRAB) {
             LoadCursorW(ptr::null_mut(), IDC_SIZEWE)
+        } else if s.slot_count > 1 {
+            // Perto de uma divisória horizontal → cursor de resize vertical.
+            let gap = px(s, 4);
+            if (0..s.slot_count - 1).any(|boundary| {
+                let rect = slot_rect(s, boundary);
+                let center = rc.top + rect.bottom + gap / 2;
+                (p.y - center).abs() <= px(s, 7).max(3)
+            }) {
+                LoadCursorW(ptr::null_mut(), IDC_SIZENS)
+            } else {
+                LoadCursorW(ptr::null_mut(), IDC_ARROW)
+            }
         } else {
             LoadCursorW(ptr::null_mut(), IDC_ARROW)
         };
@@ -1717,6 +1948,8 @@ pub fn print_status(json_output: bool) {
             "package": packaged,
             "width_logical": cfg.width,
             "slots": cfg.slots,
+            "split0": cfg.split0,
+            "split1": cfg.split1,
             "data_dir": data.display().to_string(),
             "config": config_path.display().to_string(),
             "log": log_path.display().to_string(),
@@ -1738,6 +1971,9 @@ pub fn print_status(json_output: bool) {
     }
     out.push_str(&format!("width_logical: {}\r\n", cfg.width));
     out.push_str(&format!("slots: {}\r\n", cfg.slots));
+    if cfg.slots > 1 {
+        out.push_str(&format!("splits: {},{} %%\r\n", cfg.split0, cfg.split1));
+    }
     out.push_str(&format!("data_dir: {}\r\n", data.display()));
     out.push_str(&format!("config: {}\r\n", config_path.display()));
     out.push_str(&format!("log: {}\r\n", log_path.display()));
@@ -2035,6 +2271,8 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
         "status" => ok(json!({
             "width_logical": s.width,
             "slots": s.slot_count,
+            "split0": s.split0,
+            "split1": s.split1,
             "docked": s.slots.iter().flatten().count(),
             "paused": s.agent_paused,
             "agent": s.agent.as_ref().map(|agent| json!({
@@ -2043,6 +2281,38 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                 "actions": agent.actions
             }))
         })),
+        "layout_info" => {
+            let c = content_rect(s);
+            let slot_rects: Vec<Value> = (0..s.slot_count)
+                .map(|index| {
+                    let r = slot_rect(s, index);
+                    json!({
+                        "index": index,
+                        "left": r.left,
+                        "top": r.top,
+                        "right": r.right,
+                        "bottom": r.bottom
+                    })
+                })
+                .collect();
+            ok(json!({
+                "width_logical": s.width,
+                "width_px": s.physical_width(),
+                "slots": s.slot_count,
+                "split0": s.split0,
+                "split1": s.split1,
+                "content": {
+                    "left": c.left,
+                    "top": c.top,
+                    "right": c.right,
+                    "bottom": c.bottom
+                },
+                "slot_rects": slot_rects,
+                "undo": s.undo_stack.len(),
+                "redo": s.redo_stack.len(),
+                "editing": s.edit_pre.is_some()
+            }))
+        }
         "control_status" => ok(json!({
             "paused": s.agent_paused,
             "agent": s.agent.as_ref().map(|agent| json!({
@@ -2325,6 +2595,9 @@ fn cleanup(s: &mut State) {
         KillTimer(s.hwnd, TIMER_TICK);
         UnregisterHotKey(s.hwnd, HOTKEY_ID);
         UnregisterHotKey(s.hwnd, HOTKEY_STOP_ID);
+        UnregisterHotKey(s.hwnd, HOTKEY_UNDO_ID);
+        UnregisterHotKey(s.hwnd, HOTKEY_REDO_ID);
+        UnregisterHotKey(s.hwnd, HOTKEY_CANCEL_ID);
         if !HOOK.is_null() {
             UnhookWinEvent(HOOK);
             HOOK = ptr::null_mut();
@@ -2341,6 +2614,8 @@ fn cleanup(s: &mut State) {
     Config {
         width: s.width,
         slots: s.slot_count,
+        split0: s.split0,
+        split1: s.split1,
         legacy_width: None,
     }
     .save();
@@ -2577,6 +2852,24 @@ unsafe extern "system" fn dock_proc(
             } else if id == HOTKEY_STOP_ID && s.agent.is_some() {
                 win::log("agent: hotkey Ctrl+Alt+Shift+K (parar agente)");
                 stop_agent(s);
+            } else if id == HOTKEY_UNDO_ID {
+                undo_layout(s);
+            } else if id == HOTKEY_REDO_ID {
+                redo_layout(s);
+            } else if id == HOTKEY_CANCEL_ID {
+                cancel_edit(s);
+            }
+            0
+        }
+        WM_KEYDOWN => {
+            // Esc durante uma edição de layout cancela (quando o dock tem foco).
+            if wparam as u32 == VK_ESCAPE && (s.edit_pre.is_some() || s.drag_split.is_some()) {
+                s.drag_split = None;
+                s.resizing = false;
+                unsafe {
+                    ReleaseCapture();
+                }
+                cancel_edit(s);
             }
             0
         }

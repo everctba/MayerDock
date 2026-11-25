@@ -496,6 +496,12 @@ fn tools() -> Value {
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         },
         {
+            "name": "layout_info",
+            "description": "Geometria do dock: largura, splits (%), retângulos dos slots, \
+                estado de edição e pilhas de undo/redo. Requer o MayerDock aberto.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        },
+        {
             "name": "dock_pin",
             "description": "Encaixa uma janela existente no primeiro slot livre do dock, sem \
                 ativá-la. Requer hwnd de list_windows.",
@@ -804,6 +810,10 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
         "list_slots" => {
             let slots = dock_tool("list_slots", json!({}))?;
             Ok(vec![text_content(&pretty(&slots))])
+        }
+        "layout_info" => {
+            let layout = dock_tool("layout_info", json!({}))?;
+            Ok(vec![text_content(&pretty(&layout))])
         }
         "dock_pin" => {
             let hwnd = args
@@ -1258,7 +1268,7 @@ impl Scopes {
 fn tool_category(tool: &str) -> &'static str {
     match tool {
         "status" | "list_windows" | "list_slots" | "list_controls" | "get_text" | "wait_for"
-        | "uia_query" | "guardrails_status" | "control_status" => "read",
+        | "uia_query" | "guardrails_status" | "control_status" | "layout_info" => "read",
         "capture_window" => "capture",
         "click" | "type_text" | "send_key" | "set_text" | "control_click" | "global_click"
         | "global_type" | "global_key" => "ui",

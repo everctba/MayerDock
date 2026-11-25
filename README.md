@@ -364,6 +364,23 @@ O mesmo build gera um pacote **MSIX** (F1/F2) sem tocar no Inno/portátil:
 O recurso global: `Ctrl+Alt+M` alterna mostrar/ocultar o dock. Na bandeja, clique duplo
 também alterna e o botão direito abre o menu.
 
+## Layout: largura, divisórias e undo (v1.5)
+
+- **Largura:** arraste a borda esquerda do dock. A mudança é aplicada ao vivo e só é
+  **gravada no soltar** (commit tmp+rename do `config.ini`).
+- **Divisórias arrastáveis:** com 2 ou 3 slots, arraste a linha entre eles para
+  tamanhos desiguais (ex.: 70/30). O cursor vira resize vertical (`↕`); os percentuais
+  ficam em `splits=` no `config.ini`.
+- **PreviewSession (Unit of Work/Memento):** edição tem `begin` → `update` ao vivo →
+  `commit` atômico; nada vai para o disco no meio do arrasto.
+- **Cancelar:** `Esc` (com o dock focado) ou **`Ctrl+Alt+Shift+Esc`** restaura o estado
+  anterior **sem gravar**.
+- **Undo/redo de layout:** `Ctrl+Alt+Z` / `Ctrl+Alt+Shift+Z` (pilhas por commit, até 32).
+- Estado atual para scripts: tool MCP `layout_info` (`split0/split1`, retângulos dos
+  slots, `undo/redo`, `editing`); `--status --json` inclui `split0/split1`.
+- Teste de fumaça: `python scripts\layout_session_smoke.py` (drag+commit, undo, Esc,
+  commit/undo de largura).
+
 ## DPI e escala do Windows
 
 O MayerDock é **per-monitor DPI aware v2** — o `.exe` embute um application manifest com
