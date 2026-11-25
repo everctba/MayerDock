@@ -939,18 +939,23 @@ fn sync_slot(s: &mut State, force: bool) {
 
 /// Coloca a janela na primeira divisão livre.
 fn pin_first_free(s: &mut State, hwnd: HWND) -> bool {
+    pin_window(s, hwnd, None)
+}
+
+/// Encaixa em um slot específico (se livre); senão, no primeiro livre.
+fn pin_window(s: &mut State, hwnd: HWND, preferred: Option<usize>) -> bool {
     if hwnd.is_null() || hwnd == s.hwnd {
         return false;
     }
     if s.slots.iter().flatten().any(|slot| slot.hwnd == hwnd) {
         return false;
     }
-    let free = match s.slots.iter().position(|slot| slot.is_none()) {
-        Some(index) => index,
-        None => {
-            win::log("todas as divisões ocupadas; libere uma janela antes");
-            return false;
-        }
+    let free = preferred
+        .filter(|index| *index < s.slot_count && s.slots[*index].is_none())
+        .or_else(|| s.slots.iter().position(|slot| slot.is_none()));
+    let Some(free) = free else {
+        win::log("todas as divisões ocupadas; libere uma janela antes");
+        return false;
     };
     unsafe {
         if IsIconic(hwnd) != 0 {
@@ -983,24 +988,35 @@ fn pin_first_free(s: &mut State, hwnd: HWND) -> bool {
 /// do dock (até o máximo) para caber.
 fn ensure_slot_fits(s: &mut State) {
     let mut needed = 0i32;
-    for index in 0..s.slot_count {
-        let Some(slot) = &s.slots[index] else {
-            continue;
-        };
-        let target = slot_rect(s, index);
-        let mut actual = RECT {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
-        unsafe {
-            GetWindowRect(slot.hwnd, &mut actual);
+    // O SetWindowPos do sync_slot é assíncrono para a janela alvo: medir na hora
+    // pode ler o tamanho antigo (ex.: 1092px) e alargar o dock sem necessidade.
+    for attempt in 0..4 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        let target_w = target.right - target.left;
-        let actual_w = actual.right - actual.left;
-        if actual_w > target_w + 2 {
-            needed = needed.max(actual_w + 2 * px(s, PAD));
+        needed = 0;
+        for index in 0..s.slot_count {
+            let Some(slot) = &s.slots[index] else {
+                continue;
+            };
+            let target = slot_rect(s, index);
+            let mut actual = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            unsafe {
+                GetWindowRect(slot.hwnd, &mut actual);
+            }
+            let target_w = target.right - target.left;
+            let actual_w = actual.right - actual.left;
+            if actual_w > target_w + 2 {
+                needed = needed.max(actual_w + 2 * px(s, PAD));
+            }
+        }
+        if needed == 0 {
+            break;
         }
     }
     if needed > 0 {
@@ -2082,6 +2098,11 @@ pub fn print_status(json_output: bool) {
 /// Nome do pipe usado pelo sidecar MCP (`\\.\pipe\MayerDock.Agent`).
 const AGENT_PIPE_NAME: &str = r"\\.\pipe\MayerDock.Agent";
 
+/// Nome do pipe do agente (override `MAYERDOCK_PIPE` para testes isolados).
+fn agent_pipe_name() -> String {
+    std::env::var("MAYERDOCK_PIPE").unwrap_or_else(|_| AGENT_PIPE_NAME.to_string())
+}
+
 fn agent_pipe_close() {
     unsafe {
         if !AGENT_PIPE.is_null() {
@@ -2125,7 +2146,7 @@ fn start_agent_pipe(hwnd: HWND) {
 }
 
 fn agent_pipe_loop(hwnd: HWND, token: String) {
-    let name = win::wide(AGENT_PIPE_NAME);
+    let name = win::wide(&agent_pipe_name());
     loop {
         unsafe {
             if AGENT_STOP {
@@ -2347,6 +2368,7 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
         let label = match tool {
             "list_slots" => "lendo slots",
             "dock_pin" => "encaixando janela",
+            "dock_pin_at" => "encaixando janela",
             "dock_unpin" => "liberando janela",
             "dock_release_all" => "liberando janelas",
             "status" => "consultando dock",
@@ -2489,6 +2511,22 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                 let hwnd = raw as usize as HWND;
                 let pinned = pin_first_free(s, hwnd);
                 ok(json!({ "pinned": pinned }))
+            }
+            None => err("informe args.hwnd"),
+        },
+        "dock_pin_at" => match req.pointer("/args/hwnd").and_then(Value::as_i64) {
+            Some(raw) => {
+                let hwnd = raw as usize as HWND;
+                let slot = req
+                    .pointer("/args/slot")
+                    .and_then(Value::as_u64)
+                    .map(|value| value as usize);
+                let pinned = pin_window(s, hwnd, slot);
+                let placed = s
+                    .slots
+                    .iter()
+                    .position(|slot| slot.as_ref().map(|slot| slot.hwnd) == Some(hwnd));
+                ok(json!({ "pinned": pinned, "slot": placed }))
             }
             None => err("informe args.hwnd"),
         },

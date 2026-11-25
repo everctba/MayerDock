@@ -47,9 +47,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GetClassNameW, GetClientRect, GetDlgCtrlID, GetWindowLongW,
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
     IsWindowVisible, PostMessageW, SendMessageW, SetCursorPos, ShowWindow, BM_CLICK, GWL_EXSTYLE,
-    SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNOACTIVATE, WM_CHAR, WM_GETTEXT, WM_GETTEXTLENGTH,
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_SETTEXT,
-    WS_EX_TOOLWINDOW,
+    SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNOACTIVATE, WM_CHAR, WM_GETTEXT,
+    WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_SETTEXT, WS_EX_TOOLWINDOW,
 };
 
 /// `MK_LBUTTON` (windows-sys não expõe direto no módulo de mensagens).
@@ -184,10 +184,12 @@ impl Dock {
         let token = std::fs::read_to_string(&token_path).map_err(|_| {
             "dock não está rodando (agent-token ausente); abra o MayerDock".to_string()
         })?;
+        let pipe_name = std::env::var("MAYERDOCK_PIPE")
+            .unwrap_or_else(|_| r"\\.\pipe\MayerDock.Agent".to_string());
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(r"\\.\pipe\MayerDock.Agent")
+            .open(&pipe_name)
             .map_err(|err| format!("não conectei no pipe do dock: {err}"))?;
         let reader = BufReader::new(
             file.try_clone()
@@ -473,13 +475,32 @@ fn tools() -> Value {
         },
         {
             "name": "open_app",
-            "description": "Abre um executável/arquivo (ShellExecute). Nesta fatia abre \
-                destacado; encaixar em slot do dock entra na próxima etapa.",
+            "description": "Abre um executável/arquivo (ShellExecute) sem ativar. Com pin=true \
+                espera a janela, esconde, encaixa no slot (opcional slot N) e mostra.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
-                    "args": { "type": "string" }
+                    "args": { "type": "string" },
+                    "pin": { "type": "boolean" },
+                    "slot": { "type": "integer" },
+                    "timeout_ms": { "type": "integer" }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "open_in_slot",
+            "description": "Abre um app já encaixado no dock: espera a criação da janela, \
+                esconde, posiciona no slot (opcional) e mostra — sem pulo visual.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "args": { "type": "string" },
+                    "slot": { "type": "integer" },
+                    "timeout_ms": { "type": "integer" }
                 },
                 "required": ["path"],
                 "additionalProperties": false
@@ -881,6 +902,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
         }
         "capture_window" => capture_window(args),
         "open_app" => open_app(args),
+        "open_in_slot" => open_in_slot(args),
         "window_state" => window_state(args),
         "list_slots" => {
             let slots = dock_tool("list_slots", json!({}))?;
@@ -1365,7 +1387,7 @@ fn tool_category(tool: &str) -> &'static str {
         "capture_window" => "capture",
         "click" | "type_text" | "send_key" | "set_text" | "control_click" | "global_click"
         | "global_type" | "global_key" | "scroll" => "ui",
-        "open_app" | "window_state" => "window",
+        "open_app" | "open_in_slot" | "window_state" => "window",
         "dock_pin"
         | "dock_unpin"
         | "dock_release_all"
@@ -2550,11 +2572,42 @@ fn capture(hwnd: HWND, method: &str) -> Result<(Vec<u8>, u32, u32, f64, &'static
 // ---------------------------------------------------------------------------
 
 fn open_app(args: &Value) -> Result<Vec<Value>, String> {
+    open_app_impl(args, false)
+}
+
+/// Abre um app já no slot do dock (esconde → posiciona → mostra).
+fn open_in_slot(args: &Value) -> Result<Vec<Value>, String> {
+    open_app_impl(args, true)
+}
+
+fn open_app_impl(args: &Value, default_pin: bool) -> Result<Vec<Value>, String> {
     let path = args
         .get("path")
         .and_then(Value::as_str)
         .ok_or("informe path")?;
     let arguments = args.get("args").and_then(Value::as_str).unwrap_or("");
+    let pin = args
+        .get("pin")
+        .and_then(Value::as_bool)
+        .unwrap_or(default_pin);
+    let slot = args
+        .get("slot")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+    let timeout = args
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(8000)
+        .clamp(1000, 30_000);
+    let before: Vec<u64> = if pin {
+        list_windows()
+            .iter()
+            .map(|window| window.hwnd as u64)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     let file = crate::win::wide(path);
     let params = crate::win::wide(arguments);
     let op = crate::win::wide("open");
@@ -2576,10 +2629,66 @@ fn open_app(args: &Value) -> Result<Vec<Value>, String> {
     if code <= 32 {
         return Err(format!("ShellExecute falhou (código {code}) em {path:?}"));
     }
-    crate::win::log(&format!("mcp: open_app {path} {arguments}"));
-    Ok(vec![text_content(&format!(
-        "aberto sem ativar: {path} {arguments}. Use list_windows + dock_pin(hwnd) para encaixar no dock."
-    ))])
+    crate::win::log(&format!("mcp: open_app {path} {arguments} pin={pin}"));
+    if !pin {
+        return Ok(vec![text_content(&format!(
+            "aberto sem ativar: {path} {arguments}. Use list_windows + dock_pin(hwnd) para encaixar no dock."
+        ))]);
+    }
+
+    let basename = std::path::Path::new(path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let started = Instant::now();
+    let mut found: Option<HWND> = None;
+    while (started.elapsed().as_millis() as u64) < timeout {
+        for window in list_windows() {
+            if before.contains(&(window.hwnd as u64)) {
+                continue;
+            }
+            if window_process_name(window.hwnd) == basename {
+                found = Some(window.hwnd);
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let Some(hwnd) = found else {
+        return Ok(vec![text_content(&format!(
+            "aberto, mas a janela de {path:?} não apareceu em {timeout} ms \
+             (encaixe manual com dock_pin)"
+        ))]);
+    };
+    unsafe {
+        ShowWindow(hwnd, SW_HIDE);
+    }
+    let pinned = dock_tool("dock_pin_at", json!({ "hwnd": hwnd as i64, "slot": slot }));
+    unsafe {
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+    match pinned {
+        Ok(value) if value.get("pinned").and_then(Value::as_bool) == Some(true) => {
+            let placed = value.get("slot").and_then(Value::as_u64).unwrap_or(0);
+            overlay_event("pin", Some(hwnd), -1, -1, &format!("slot {placed}"));
+            Ok(vec![text_content(&format!(
+                "aberto e encaixado no slot {placed} (0x{:X})",
+                hwnd as usize
+            ))])
+        }
+        Ok(value) => Ok(vec![text_content(&format!(
+            "aberto em 0x{:X}, mas não encaixei: {value}",
+            hwnd as usize
+        ))]),
+        Err(err) => Ok(vec![text_content(&format!(
+            "aberto em 0x{:X}, dock indisponível: {err}",
+            hwnd as usize
+        ))]),
+    }
 }
 
 fn window_state(args: &Value) -> Result<Vec<Value>, String> {
