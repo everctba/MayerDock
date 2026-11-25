@@ -117,10 +117,15 @@ argumentos), sem abrir a interface. Saída `--json` é estável para scripts/est
 
 # script runner (passos declarativos, sem agente/MCP)
 .\dist\MayerDock\mayerdock.exe --script scripts\sample_script.json --json
+
+# script runner modo CI: JSON + JUnit + headless (nunca abre o dock)
+.\dist\MayerDock\mayerdock.exe --script scripts\sample_script.json --ci `
+    --report-junit artifacts\junit.xml --report-json artifacts\report.json --headless
 ```
 
-**Script runner** (`--script arquivo.json [--json] [--timeout ms]`): executa passos e
-retorna relatório JSON (`ok`, `steps[]` com `ms`/`error`, `duration_ms`, `aborted`).
+**Script runner** (`--script arquivo.json [--json] [--timeout ms] [--ci]
+[--report-junit ARQ] [--report-json ARQ]`): executa passos e retorna relatório JSON
+(`ok`, `steps[]` com `ms`/`error`, `duration_ms`, `aborted`, `ci`).
 Ações: `open_app`, `wait_window`, `find_control`, `click`, `type_text`, `send_key`,
 `set_text`, `control_click`, `get_text`, `wait_for`, `uia_query`, `uia_invoke`,
 `window_state`, `capture`, `assert_text`, `assert_window`, `list_slots`, `dock_pin`,
@@ -128,6 +133,11 @@ Ações: `open_app`, `wait_window`, `find_control`, `click`, `type_text`, `send_
 `continue_on_error` por passo. Exemplo em
 [scripts/sample_script.json](scripts/sample_script.json). Exit codes: 0 passou,
 1 falhou um passo, 2 script/argumento inválido.
+
+**Modo CI:** `--ci` desliga texto humano, bloqueia ações que dependem de interação
+(`focus_lease`/`global_*`) e aplica timeout padrão de 120 s; `--report-junit` gera XML
+para o runner e `--report-json` o relatório completo como artefato. `--headless`/`--no-ui`
+garante que o dock nunca abre (exige um comando).
 
 Códigos de saída: **0** = ok, **1** = erro de execução (janela não achada, captura
 falhou), **2** = uso inválido. `--silent`/`--quiet` implica saída JSON (sem texto humano).
@@ -138,7 +148,8 @@ $cap = .\dist\MayerDock\mayerdock.exe --capture --title "Notepad" --out artifact
        ConvertFrom-Json
 if (-not $cap.ok) { throw $cap.error }
 
-$run = .\dist\MayerDock\mayerdock.exe --script scripts\sample_script.json --json |
+$run = .\dist\MayerDock\mayerdock.exe --script scripts\sample_script.json --ci `
+       --report-junit artifacts\junit.xml --report-json artifacts\report.json |
        ConvertFrom-Json
 if (-not $run.ok) { throw "script falhou no passo $($run.steps | ? { -not $_.ok } | select -First 1)" }
 ```

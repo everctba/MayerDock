@@ -202,18 +202,26 @@ estar pronta.
   assert_text → capture → close) passou em ~218 ms; script com assert errado retorna
   exit 1 e `aborted=true`; JSON inválido/arquivo ausente retorna exit 2.
 
-### Fase 3 — integração CI
+### Fase 3 — integração CI — concluída (2026-11-24)
 
-- Relatório JSON/JUnit, `--timeout` global, `--ci` (sem modais; lease nunca automático;
-  input global só com `--allow-global-input` explícito).
+- `--ci`: saída JSON, sem texto humano, timeout padrão de 120 s e bloqueio de ações que
+  dependem de interação (`focus_lease`/`global_*`); input direcionado segue permitido.
+- `--report-junit ARQ`: XML `<testsuite>` com `tests`/`failures`/`time` e um
+  `<testcase>` por passo (failure com a mensagem do assert).
+- `--report-json ARQ`: relatório completo (steps, ms, output, error, duration).
+- `--timeout ms`: limite global (além do `timeout_ms` por passo).
+- Validado: script de sucesso com `--ci` → exit 0, JUnit `tests=7 failures=0`, JSON
+  gravado; script com assert errado → exit 1 e JUnit `failures=1`; `--ci`/`--headless`
+  sem comando e `--report-junit` sem `--script` → exit 2.
 - **Limite:** automação de GUI exige sessão de desktop interativa — runners hospedados do
   GitHub Actions não têm; documentar self-hosted com autologon/RDP. Unit/fuzz
   (`build.ps1 -Test`) rodam em qualquer runner.
 
-### Fase 4 — headless/no-UI
+### Fase 4 — headless/no-UI — concluída (2026-11-24)
 
-- `--headless`/`--no-ui` para ferramentas sem bandeja/HUD; opcional "dock invisível" para
-  testar AppBar sem incomodar o usuário.
+- `--headless`/`--no-ui`: aceito em conjunto com um comando de console e garante que o
+  dock **nunca** abre (sem comando → exit 2 com mensagem de uso).
+- Validado: `--script ... --headless` → exit 0; `--headless` sozinho → exit 2.
 
 ---
 

@@ -1250,7 +1250,71 @@ fn run_script_action(
 }
 
 /// `--script arquivo.json [--json] [--timeout ms]`: roda passos declarativos.
-pub fn cli_script(path: &str, json_output: bool, timeout_ms: Option<u64>) -> i32 {
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn write_text_artifact(path: &str, content: &str) -> Result<(), String> {
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(path, content).map_err(|err| format!("não escrevi {path:?}: {err}"))
+}
+
+/// Gera JUnit XML a partir do relatório do script (para a esteira de CI).
+fn junit_report(name: &str, results: &[Value], duration_ms: u128) -> String {
+    let tests = results.len();
+    let failures = results
+        .iter()
+        .filter(|step| step.get("ok").and_then(Value::as_bool) != Some(true))
+        .count();
+    let mut xml = String::new();
+    xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    xml.push_str(&format!(
+        "<testsuite name=\"{}\" tests=\"{tests}\" failures=\"{failures}\" errors=\"0\" time=\"{:.3}\">\n",
+        xml_escape(name),
+        duration_ms as f64 / 1000.0
+    ));
+    for step in results {
+        let index = step.get("index").and_then(Value::as_u64).unwrap_or(0);
+        let action = step.get("action").and_then(Value::as_str).unwrap_or("-");
+        let ms = step.get("ms").and_then(Value::as_u64).unwrap_or(0);
+        let case = format!("[{index}] {action}");
+        let step_ok = step.get("ok").and_then(Value::as_bool).unwrap_or(false);
+        if step_ok {
+            xml.push_str(&format!(
+                "  <testcase classname=\"mayerdock.script\" name=\"{}\" time=\"{:.3}\"/>\n",
+                xml_escape(&case),
+                ms as f64 / 1000.0
+            ));
+        } else {
+            let error = step.get("error").and_then(Value::as_str).unwrap_or("");
+            xml.push_str(&format!(
+                "  <testcase classname=\"mayerdock.script\" name=\"{}\" time=\"{:.3}\"><failure message=\"{}\">{}</failure></testcase>\n",
+                xml_escape(&case),
+                ms as f64 / 1000.0,
+                xml_escape(error),
+                xml_escape(error)
+            ));
+        }
+    }
+    xml.push_str("</testsuite>\n");
+    xml
+}
+
+/// `--script arquivo.json [--json] [--timeout ms] [--ci] [--report-junit arq] [--report-json arq]`.
+pub fn cli_script(
+    path: &str,
+    json_output: bool,
+    timeout_ms: Option<u64>,
+    ci: bool,
+    junit_path: Option<&str>,
+    report_json_path: Option<&str>,
+) -> i32 {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(err) => return cli_usage_error(&format!("não li {path:?}: {err}"), json_output),
@@ -1270,7 +1334,9 @@ pub fn cli_script(path: &str, json_output: bool, timeout_ms: Option<u64>) -> i32
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("script");
-    let global_timeout = timeout_ms.or(script.get("timeout_ms").and_then(Value::as_u64));
+    let global_timeout = timeout_ms
+        .or(script.get("timeout_ms").and_then(Value::as_u64))
+        .or(if ci { Some(120_000) } else { None });
     let started = Instant::now();
     let mut vars: HashMap<String, Value> = HashMap::new();
     let mut results: Vec<Value> = Vec::new();
@@ -1298,7 +1364,17 @@ pub fn cli_script(path: &str, json_output: bool, timeout_ms: Option<u64>) -> i32
         let raw_args = step.get("args").cloned().unwrap_or_else(|| json!({}));
         let step_args = vars_resolve(&raw_args, &vars);
         let step_started = Instant::now();
-        let result = run_script_action(&action, &step_args, &mut vars);
+        let result = if ci
+            && matches!(
+                action.as_str(),
+                "focus_lease" | "global_click" | "global_type" | "global_key"
+            ) {
+            Err(format!(
+                "ação {action:?} bloqueada em --ci (exige interação/lease; use input direcionado)"
+            ))
+        } else {
+            run_script_action(&action, &step_args, &mut vars)
+        };
         let elapsed = step_started.elapsed().as_millis();
         match result {
             Ok((output, variable)) => {
@@ -1341,8 +1417,31 @@ pub fn cli_script(path: &str, json_output: bool, timeout_ms: Option<u64>) -> i32
         "name": name,
         "steps": results,
         "duration_ms": started.elapsed().as_millis(),
-        "aborted": aborted
+        "aborted": aborted,
+        "ci": ci
     });
+    // Artefatos de CI: JUnit (para o runner) e relatório JSON (para dashboards).
+    if let Some(path) = report_json_path {
+        let pretty = serde_json::to_string_pretty(&report).unwrap_or_default();
+        if let Err(err) = write_text_artifact(path, &pretty) {
+            crate::win::console_print(&format!("erro: {err}\r\n"));
+            return 2;
+        }
+    }
+    if let Some(path) = junit_path {
+        let xml = junit_report(
+            name,
+            report["steps"]
+                .as_array()
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]),
+            started.elapsed().as_millis(),
+        );
+        if let Err(err) = write_text_artifact(path, &xml) {
+            crate::win::console_print(&format!("erro: {err}\r\n"));
+            return 2;
+        }
+    }
     if json_output {
         print_json(&report);
     } else {

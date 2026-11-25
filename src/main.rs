@@ -18,9 +18,11 @@ Console / CI (não abre o dock):\r\n\
   mayerdock.exe --list-windows [--json]\r\n\
   mayerdock.exe --capture (--title T | --hwnd N) [--out ARQ] [--json]\r\n\
   mayerdock.exe --script ARQ.json [--json] [--timeout ms]\r\n\
+  mayerdock.exe --script ARQ.json --ci --report-junit junit.xml --report-json out.json\r\n\
   mayerdock.exe --version | --help\r\n\
 \r\n\
-Flags: --json (saída legível por máquina), --silent/--quiet (só JSON/erros).\r\n\
+Flags: --json (saída legível por máquina), --silent/--quiet (só JSON/erros),\r\n\
+       --ci (sem modais/lease; relatório estável), --headless/--no-ui (nunca abre o dock).\r\n\
 Saída: 0 = ok, 1 = erro de execução, 2 = uso inválido.\r\n";
 
 fn usage_error(message: &str) -> ! {
@@ -47,12 +49,33 @@ fn main() {
     let mut out: Option<String> = None;
     let mut script: Option<String> = None;
     let mut timeout: Option<u64> = None;
+    let mut ci = false;
+    let mut headless = false;
+    let mut junit: Option<String> = None;
+    let mut report_json: Option<String> = None;
+    let _allow_global_input = false;
 
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--json" => json = true,
             "--silent" | "--quiet" => silent = true,
+            "--ci" => ci = true,
+            "--headless" | "--no-ui" => headless = true,
+            "--report-junit" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    usage_error("--report-junit exige um caminho");
+                };
+                junit = Some(value.clone());
+            }
+            "--report-json" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    usage_error("--report-json exige um caminho");
+                };
+                report_json = Some(value.clone());
+            }
             "--status" => status = true,
             "--list-windows" | "--windows" => list = true,
             "--capture" => capture = true,
@@ -112,8 +135,18 @@ fn main() {
         index += 1;
     }
 
-    // --silent implica saída JSON (sem texto humano).
-    let machine = json || silent;
+    // --silent/--ci implicam saída JSON (sem texto humano).
+    let machine = json || silent || ci;
+
+    let has_console_command = status || list || capture || script.is_some();
+    if (ci || headless) && !has_console_command {
+        usage_error(
+            "--ci/--headless exigem um comando (--status, --list-windows, --capture, --script)",
+        );
+    }
+    if (junit.is_some() || report_json.is_some()) && script.is_none() {
+        usage_error("--report-junit/--report-json exigem --script");
+    }
 
     if status {
         dock::print_status(machine);
@@ -126,7 +159,14 @@ fn main() {
         std::process::exit(mcp::cli_capture(hwnd, title, out, machine));
     }
     if let Some(path) = script {
-        std::process::exit(mcp::cli_script(&path, machine, timeout));
+        std::process::exit(mcp::cli_script(
+            &path,
+            machine,
+            timeout,
+            ci,
+            junit.as_deref(),
+            report_json.as_deref(),
+        ));
     }
 
     // Nenhum comando de console: inicia o dock normalmente.
