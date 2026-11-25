@@ -158,3 +158,55 @@ estar pronta.
 - Não capturar janelas de terceiros além das abertas pelo próprio teste.
 - `cargo-fuzz` não funciona no toolchain GNU/offline desta máquina — documentar a
   alternativa usada e não bloquear o build atual.
+
+---
+
+## T-003 — Modo console/silent para CI (CLI JSON + script runner)
+
+- **Status:** Fase 1 concluída · **Prioridade:** P1 · **Task no beads:** `md-d33.2`
+- **Objetivo:** controlar o MayerDock por terminal/argumentos (sem abrir o dock), para
+  esteiras de teste (ex.: DeepSeek Harness) validarem fluxos antes de tocar a conta real.
+
+### Fase 1 — concluída (2026-11-24)
+
+- Flags globais `--json` e `--silent`/`--quiet` (saída legível por máquina).
+- `--status [--json]`, `--list-windows [--json]`, `--capture (--title|--hwnd) [--out] [--json]`.
+- Códigos de saída: `0` ok, `1` erro de execução, `2` uso inválido.
+- Testado no `.exe` de `dist\`: JSON válido, captura em arquivo, erro 1 para janela
+  inexistente e erro 2 para argumento inválido.
+
+### Fase 2 — script runner (próxima)
+
+`mayerdock.exe --script teste.json [--json] [--timeout 60]`:
+
+```json
+{
+  "name": "checkout",
+  "steps": [
+    { "action": "open_app", "args": { "path": "notepad.exe" } },
+    { "action": "wait_window", "args": { "title": "Notepad", "timeout_ms": 5000 }, "as": "np" },
+    { "action": "type_text", "args": { "hwnd": "$np", "text": "hello" } },
+    { "action": "assert_text", "args": { "hwnd": "$np", "contains": "hello" } },
+    { "action": "capture", "args": { "hwnd": "$np", "out": "artifacts/np.png" } }
+  ]
+}
+```
+
+- Ações: `open_app`, `wait_window`, `click`, `type_text`, `send_key`, `get_text`,
+  `set_text`, `control_click`, `uia_invoke`, `capture`, `assert_text`, `assert_window`,
+  `sleep`.
+- Variáveis (`as`/`$var`), resultado JSON com pass/fail por passo, duração e screenshots;
+  exit code 0/1. Sem MCP, sem agente.
+
+### Fase 3 — integração CI
+
+- Relatório JSON/JUnit, `--timeout` global, `--ci` (sem modais; lease nunca automático;
+  input global só com `--allow-global-input` explícito).
+- **Limite:** automação de GUI exige sessão de desktop interativa — runners hospedados do
+  GitHub Actions não têm; documentar self-hosted com autologon/RDP. Unit/fuzz
+  (`build.ps1 -Test`) rodam em qualquer runner.
+
+### Fase 4 — headless/no-UI
+
+- `--headless`/`--no-ui` para ferramentas sem bandeja/HUD; opcional "dock invisível" para
+  testar AppBar sem incomodar o usuário.

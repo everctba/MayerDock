@@ -1630,10 +1630,30 @@ fn shell_restart(s: &mut State) {
 }
 
 /// `--status`: versão, modo (pacote/portátil), config e caminhos reais.
-pub fn print_status() {
+pub fn print_status(json_output: bool) {
     let cfg = Config::load();
     let packaged = win::package_full_name();
     let data = config::resolved_data_dir();
+    let config_path = data.join("config.ini");
+    let log_path = data.join("mayerdock.log");
+    if json_output {
+        let value = json!({
+            "ok": true,
+            "version": env!("CARGO_PKG_VERSION"),
+            "packaged": packaged.is_some(),
+            "package": packaged,
+            "width_logical": cfg.width,
+            "slots": cfg.slots,
+            "data_dir": data.display().to_string(),
+            "config": config_path.display().to_string(),
+            "log": log_path.display().to_string(),
+        });
+        win::console_print(&format!(
+            "{}\r\n",
+            serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
+        ));
+        return;
+    }
     let mut out = String::new();
     out.push_str(&format!("version: {}\r\n", env!("CARGO_PKG_VERSION")));
     out.push_str(&format!(
@@ -1646,14 +1666,8 @@ pub fn print_status() {
     out.push_str(&format!("width_logical: {}\r\n", cfg.width));
     out.push_str(&format!("slots: {}\r\n", cfg.slots));
     out.push_str(&format!("data_dir: {}\r\n", data.display()));
-    out.push_str(&format!(
-        "config: {}\r\n",
-        data.join("config.ini").display()
-    ));
-    out.push_str(&format!(
-        "log: {}\r\n",
-        data.join("mayerdock.log").display()
-    ));
+    out.push_str(&format!("config: {}\r\n", config_path.display()));
+    out.push_str(&format!("log: {}\r\n", log_path.display()));
     win::console_print(&out);
 }
 

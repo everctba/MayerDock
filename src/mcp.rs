@@ -906,6 +906,135 @@ fn capture_dir() -> PathBuf {
         .join(std::process::id().to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Modo console / CI (one-shot, sem abrir o dock)
+// ---------------------------------------------------------------------------
+
+fn print_json(value: &Value) {
+    crate::win::console_print(&format!(
+        "{}\r\n",
+        serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
+    ));
+}
+
+fn cli_error(message: &str, json_output: bool) -> i32 {
+    if json_output {
+        print_json(&json!({ "ok": false, "error": message }));
+    } else {
+        crate::win::console_print(&format!("erro: {message}\r\n"));
+    }
+    1
+}
+
+/// `--list-windows [--json]`: inventário de janelas para scripts/CI.
+pub fn cli_list_windows(json_output: bool) -> i32 {
+    let windows = list_windows();
+    if json_output {
+        let items: Vec<Value> = windows
+            .iter()
+            .map(|window| {
+                json!({
+                    "hwnd": window.hwnd as usize,
+                    "title": window.title,
+                    "class": window.class,
+                    "pid": window.pid,
+                    "rect": {
+                        "left": window.rect.left,
+                        "top": window.rect.top,
+                        "right": window.rect.right,
+                        "bottom": window.rect.bottom
+                    },
+                    "width": window.rect.right - window.rect.left,
+                    "height": window.rect.bottom - window.rect.top,
+                    "dpi_scale": window.dpi
+                })
+            })
+            .collect();
+        print_json(&json!({ "ok": true, "windows": items, "count": windows.len() }));
+        return 0;
+    }
+    let mut out = String::new();
+    for window in &windows {
+        out.push_str(&format!(
+            "0x{:X}\t{}\t{}\tpid={}\t{}x{}\tdpi={:.0}%\r\n",
+            window.hwnd as usize,
+            window.class,
+            window.title,
+            window.pid,
+            window.rect.right - window.rect.left,
+            window.rect.bottom - window.rect.top,
+            window.dpi * 100.0
+        ));
+    }
+    if out.is_empty() {
+        out.push_str("(nenhuma janela visível com título)\r\n");
+    }
+    crate::win::console_print(&out);
+    0
+}
+
+/// `--capture (--title T | --hwnd N) [--out ARQ] [--json]`.
+pub fn cli_capture(
+    hwnd: Option<i64>,
+    title: Option<String>,
+    out: Option<String>,
+    json_output: bool,
+) -> i32 {
+    let args = match (hwnd, title.as_ref()) {
+        (Some(hwnd), _) => json!({ "hwnd": hwnd }),
+        (None, Some(title)) => json!({ "title": title }),
+        (None, None) => return cli_error("informe --title ou --hwnd", json_output),
+    };
+    let target = match find_window(&args) {
+        Ok(target) => target,
+        Err(err) => return cli_error(&err, json_output),
+    };
+    let (png, width, height, dpi, method) = match capture(target, "auto") {
+        Ok(result) => result,
+        Err(err) => return cli_error(&err, json_output),
+    };
+    let path = match out {
+        Some(path) => PathBuf::from(path),
+        None => capture_dir().join(format!(
+            "cli-{}.png",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or(0)
+        )),
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(err) = std::fs::write(&path, &png) {
+        return cli_error(&format!("não escrevi {:?}: {err}", path), json_output);
+    }
+    if json_output {
+        print_json(&json!({
+            "ok": true,
+            "file": path.display().to_string(),
+            "hwnd": target as usize,
+            "width": width,
+            "height": height,
+            "dpi_scale": dpi,
+            "method": method,
+            "bytes": png.len()
+        }));
+    } else {
+        crate::win::console_print(&format!(
+            "capturada: 0x{:X} {}x{} dpi={:.0}% método={}\r\narquivo: {}\r\nbytes: {}\r\n",
+            target as usize,
+            width,
+            height,
+            dpi * 100.0,
+            method,
+            path.display(),
+            png.len()
+        ));
+    }
+    0
+}
+
 fn capture(hwnd: HWND, method: &str) -> Result<(Vec<u8>, u32, u32, f64, &'static str), String> {
     unsafe {
         let mut rect: RECT = std::mem::zeroed();

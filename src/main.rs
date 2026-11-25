@@ -10,34 +10,106 @@ mod win;
 
 const HELP: &str = "MayerDock — dock lateral\r\n\
 Uso:\r\n\
-  mayerdock.exe            inicia o dock (bandeja)\r\n\
-  mayerdock.exe --mcp      servidor MCP stdio (agent workspace, protótipo)\r\n\
-  mayerdock.exe --status   versão, modo (pacote), config e caminhos reais\r\n\
-  mayerdock.exe --version  mostra a versão\r\n\
-  mayerdock.exe --help     esta ajuda\r\n";
+  mayerdock.exe                      inicia o dock (bandeja)\r\n\
+  mayerdock.exe --mcp                servidor MCP stdio (agent workspace)\r\n\
+\r\n\
+Console / CI (não abre o dock):\r\n\
+  mayerdock.exe --status [--json]    versão, modo, config e caminhos\r\n\
+  mayerdock.exe --list-windows [--json]\r\n\
+  mayerdock.exe --capture (--title T | --hwnd N) [--out ARQ] [--json]\r\n\
+  mayerdock.exe --version | --help\r\n\
+\r\n\
+Flags: --json (saída legível por máquina), --silent/--quiet (só JSON/erros).\r\n\
+Saída: 0 = ok, 1 = erro de execução, 2 = uso inválido.\r\n";
+
+fn usage_error(message: &str) -> ! {
+    win::console_print(&format!("erro: {message}\r\n\r\n{HELP}"));
+    std::process::exit(2);
+}
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    match args.get(1).map(String::as_str) {
-        Some("--mcp") => {
-            let code = mcp::serve(env!("CARGO_PKG_VERSION"));
-            std::process::exit(code);
-        }
-        Some("--status") => {
-            dock::print_status();
-            return;
-        }
-        Some("--version") | Some("-V") => {
-            win::console_print(&format!("MayerDock {}\r\n", env!("CARGO_PKG_VERSION")));
-            return;
-        }
-        Some("--help") | Some("-h") => {
-            win::console_print(HELP);
-            return;
-        }
-        _ => {}
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() {
+        run_dock();
+    }
+    if args[0] == "--mcp" {
+        std::process::exit(mcp::serve(env!("CARGO_PKG_VERSION")));
     }
 
+    let mut json = false;
+    let mut silent = false;
+    let mut status = false;
+    let mut list = false;
+    let mut capture = false;
+    let mut title: Option<String> = None;
+    let mut hwnd: Option<i64> = None;
+    let mut out: Option<String> = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--silent" | "--quiet" => silent = true,
+            "--status" => status = true,
+            "--list-windows" | "--windows" => list = true,
+            "--capture" => capture = true,
+            "--title" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    usage_error("--title exige um valor");
+                };
+                title = Some(value.clone());
+            }
+            "--hwnd" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    usage_error("--hwnd exige um número");
+                };
+                hwnd = Some(
+                    value
+                        .parse::<i64>()
+                        .unwrap_or_else(|_| usage_error("--hwnd inválido")),
+                );
+            }
+            "--out" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    usage_error("--out exige um caminho");
+                };
+                out = Some(value.clone());
+            }
+            "--version" | "-V" => {
+                win::console_print(&format!("MayerDock {}\r\n", env!("CARGO_PKG_VERSION")));
+                return;
+            }
+            "--help" | "-h" => {
+                win::console_print(HELP);
+                return;
+            }
+            other => usage_error(&format!("argumento desconhecido: {other}")),
+        }
+        index += 1;
+    }
+
+    // --silent implica saída JSON (sem texto humano).
+    let machine = json || silent;
+
+    if status {
+        dock::print_status(machine);
+        return;
+    }
+    if list {
+        std::process::exit(mcp::cli_list_windows(machine));
+    }
+    if capture {
+        std::process::exit(mcp::cli_capture(hwnd, title, out, machine));
+    }
+
+    // Nenhum comando de console: inicia o dock normalmente.
+    run_dock();
+}
+
+fn run_dock() {
     let cfg = config::Config::load();
     let code = dock::run(cfg);
     std::process::exit(code);

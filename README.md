@@ -96,12 +96,34 @@ Rodando a versão portátil:
 > então mover a pasta não perde configuração. Se o MayerDock estiver aberto, feche antes
 > de recompilar (o `.exe` fica travado).
 
-## Linha de comando (diagnóstico)
+## Linha de comando (diagnóstico e CI)
+
+O MayerDock é controlável por humanos (cliques) **e por outros programas** (terminal e
+argumentos), sem abrir a interface. Saída `--json` é estável para scripts/esteiras.
 
 ```powershell
-.\dist\MayerDock\mayerdock.exe --status    # versão, modo, config e caminhos reais
+# diagnóstico
+.\dist\MayerDock\mayerdock.exe --status            # texto legível
+.\dist\MayerDock\mayerdock.exe --status --json     # JSON para CI
 .\dist\MayerDock\mayerdock.exe --version
 .\dist\MayerDock\mayerdock.exe --help
+
+# inventário de janelas (one-shot, não abre o dock)
+.\dist\MayerDock\mayerdock.exe --list-windows --json
+
+# captura de uma janela para arquivo
+.\dist\MayerDock\mayerdock.exe --capture --title Notepad --out target\cap.png --json
+.\dist\MayerDock\mayerdock.exe --capture --hwnd 0x1234 --out target\cap.png
+```
+
+Códigos de saída: **0** = ok, **1** = erro de execução (janela não achada, captura
+falhou), **2** = uso inválido. `--silent`/`--quiet` implica saída JSON (sem texto humano).
+Exemplo de uso em PowerShell/CI:
+
+```powershell
+$cap = .\dist\MayerDock\mayerdock.exe --capture --title "Notepad" --out artifacts\np.png --json |
+       ConvertFrom-Json
+if (-not $cap.ok) { throw $cap.error }
 ```
 
 O `--status` mostra:
@@ -118,6 +140,11 @@ log: C:\Users\...\AppData\Roaming\MayerDock\mayerdock.log
 
 No modo **MSIX** (`packaged: true`, com `package:` também), esses caminhos são os da
 **área do pacote** (redirecionada pelo Windows) — é o endereço real para achar config/log.
+
+> **Limite de CI:** automação de janelas exige uma **sessão de desktop interativa**. Os
+> runners hospedados do GitHub Actions rodam como serviço (sem desktop): use runners
+> **self-hosted** com autologon/RDP (ou um display virtual) para testes de GUI; testes de
+> unidade/fuzz (`build.ps1 -Test`) rodam em qualquer runner.
 
 ## MCP (v1.5 — Agent Workspace)
 
