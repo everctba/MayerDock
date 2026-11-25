@@ -291,6 +291,30 @@ fn dock_activity_if_connected(text: &str) {
     }
 }
 
+/// Consulta (com cache de 750 ms) se o humano assumiu o controle no dock.
+fn dock_control_paused() -> bool {
+    static mut CACHE: Option<(Instant, bool)> = None;
+    unsafe {
+        if let Some((at, paused)) = CACHE {
+            if at.elapsed() < Duration::from_millis(750) {
+                return paused;
+            }
+        }
+        let paused = dock()
+            .and_then(|dock| dock.call("control_status", json!({})))
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("paused")
+                    .and_then(Value::as_bool)
+                    .or_else(|| value.pointer("/result/paused").and_then(Value::as_bool))
+            })
+            .unwrap_or(false);
+        CACHE = Some((Instant::now(), paused));
+        paused
+    }
+}
+
 fn handle(message: &Value, version: &str, _initialized: &mut bool) -> Value {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
     let method = message
@@ -338,6 +362,21 @@ fn handle(message: &Value, version: &str, _initialized: &mut bool) -> Value {
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            // Pair testing: se o humano assumiu no dock, o agente fica pausado
+            // (somente tools de manutenção respondem).
+            let maintenance = matches!(name, "status" | "guardrails_status" | "control_status");
+            if !maintenance && dock_control_paused() {
+                return result(
+                    id,
+                    json!({
+                        "content": [{
+                            "type": "text",
+                            "text": "agente pausado: o humano assumiu o controle no dock (clique em ▶ para devolver)"
+                        }],
+                        "isError": true
+                    }),
+                );
+            }
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
             match call_tool(name, &args) {
                 Ok(content) => result(id, json!({ "content": content, "isError": false })),
@@ -670,6 +709,12 @@ fn tools() -> Value {
             "description": "Mostra as regras de guardrails em vigor (blocklist de apps/títulos, \
                 redaction de regiões/títulos) e o caminho do log de auditoria.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        },
+        {
+            "name": "control_status",
+            "description": "Diz quem está no controle no dock: \"agente\" ou \"humano\" \
+                (pair testing). Quando o humano assume, as demais tools ficam pausadas.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }
     ])
 }
@@ -782,6 +827,13 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
                 "redact_titles": guardrails.redact_titles,
                 "redact_regions": regions
             })))])
+        }
+        "control_status" => {
+            let paused = dock_control_paused();
+            Ok(vec![text_content(&format!(
+                "controle: {} (paused={paused})",
+                if paused { "humano" } else { "agente" }
+            ))])
         }
         _ => Err(format!("tool desconhecida: {name}")),
     }

@@ -211,6 +211,12 @@ cor**: azul = sem sessão, cor estável por agente e **âmbar durante o lease**.
 o agente; a bandeja ganha “Parar agente” enquanto houver sessão. Capturas em
 `%APPDATA%\MayerDock\agent\<pid>\cap-<timestamp>.png` (caminho, DPI e imagem base64).
 
+**Pair testing:** com sessão ativa, o botão **✋** assume o controle — pausa as tools do
+agente, cancela o lease e mostra `· você no controle` no HUD; o botão **▶** devolve ao
+agente. A tool `control_status` informa quem está no comando e, enquanto pausado, as
+demais tools respondem `agente pausado: o humano assumiu o controle no dock`. O kill
+switch (**■**) encerra a sessão e zera o estado.
+
 O modal de lease oferece **“Permitir sempre para este app”**: a regra fica em
 `%APPDATA%\MayerDock\lease-allow.txt` (apague o arquivo para revogar). Pedidos de lease são
 limitados a **3 por minuto**.

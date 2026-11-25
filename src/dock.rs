@@ -163,8 +163,12 @@ struct State {
     btn_release: RECT,
     /// Botão "Parar agente" (zeta quando não há sessão).
     btn_stop: RECT,
+    /// Botão "Assumir/Devolver" o controle (pair testing, só com sessão).
+    btn_control: RECT,
     /// Sessão de agente conectada via MCP (HUD).
     agent: Option<AgentInfo>,
+    /// Humano assumiu o controle: tools do agente ficam pausadas.
+    agent_paused: bool,
     /// Lease de foco ativo (modal aprovado) e janela a restaurar.
     lease: Option<Lease>,
     /// Timestamps dos pedidos de lease (rate limit de 3/min).
@@ -275,7 +279,14 @@ impl State {
                 right: 0,
                 bottom: 0,
             },
+            btn_control: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
             agent: None,
+            agent_paused: false,
             lease: None,
             lease_requests: Vec::new(),
             font_title: make_font(15, 600, scale),
@@ -1113,14 +1124,42 @@ fn paint(hwnd: HWND, s: &mut State) {
         if stop.right > stop.left {
             draw_button(hdc, s.font_ui, &stop, "■", true);
         }
+        // Pair testing: "✋" assume o controle (pausa tools); "▶" devolve ao agente.
+        let control = if s.agent.is_some() {
+            RECT {
+                left: stop.left - btn_w - btn_gap,
+                top: close.top,
+                right: stop.left - btn_gap,
+                bottom: close.bottom,
+            }
+        } else {
+            RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            }
+        };
+        if control.right > control.left {
+            draw_button(
+                hdc,
+                s.font_ui,
+                &control,
+                if s.agent_paused { "▶" } else { "✋" },
+                true,
+            );
+        }
         s.btn_menu = menu_b;
         s.btn_close = close;
         s.btn_release = release;
         s.btn_stop = stop;
+        s.btn_control = control;
 
         // HUD do agente no cabeçalho (nome + atividade atual).
         if let Some(agent) = &s.agent {
-            let hud_right = if stop.right > stop.left {
+            let hud_right = if control.right > control.left {
+                control.left
+            } else if stop.right > stop.left {
                 stop.left
             } else {
                 release.left
@@ -1133,6 +1172,9 @@ fn paint(hwnd: HWND, s: &mut State) {
             };
             if hud.right > hud.left + px(s, 40) {
                 let mut text = format!("● {} · {}", agent.name, agent.activity);
+                if s.agent_paused {
+                    text.push_str(" · você no controle");
+                }
                 if let Some(lease) = &s.lease {
                     let remaining = lease
                         .until
@@ -1278,6 +1320,10 @@ fn on_lbutton_up(s: &mut State, lparam: LPARAM) {
 
     let (x, y) = client_point(lparam);
     if y < px(s, HEADER_H) {
+        if point_in(&s.btn_control, x, y) {
+            toggle_human_control(s);
+            return;
+        }
         if point_in(&s.btn_stop, x, y) {
             stop_agent(s);
             return;
@@ -1990,10 +2036,18 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
             "width_logical": s.width,
             "slots": s.slot_count,
             "docked": s.slots.iter().flatten().count(),
+            "paused": s.agent_paused,
             "agent": s.agent.as_ref().map(|agent| json!({
                 "name": agent.name,
                 "activity": agent.activity,
                 "actions": agent.actions
+            }))
+        })),
+        "control_status" => ok(json!({
+            "paused": s.agent_paused,
+            "agent": s.agent.as_ref().map(|agent| json!({
+                "name": agent.name,
+                "activity": agent.activity
             }))
         })),
         "list_slots" => ok(slots_json(s)),
@@ -2225,7 +2279,42 @@ fn stop_agent(s: &mut State) {
         }
     }
     s.agent = None;
+    s.agent_paused = false;
     agent_pipe_close();
+    unsafe {
+        InvalidateRect(s.hwnd, ptr::null(), 0);
+    }
+}
+
+/// Pair testing: humano assume/devolve o controle (pausa tools do agente).
+fn toggle_human_control(s: &mut State) {
+    if s.agent.is_none() {
+        return;
+    }
+    s.agent_paused = !s.agent_paused;
+    if s.agent_paused {
+        // Assumir cancela o lease: o humano está no comando.
+        if let Some(lease) = s.lease.take() {
+            if !lease.previous.is_null() && unsafe { IsWindow(lease.previous) } != 0 {
+                unsafe {
+                    SetForegroundWindow(lease.previous);
+                }
+            }
+        }
+    }
+    let name = s
+        .agent
+        .as_ref()
+        .map(|agent| agent.name.clone())
+        .unwrap_or_default();
+    win::log(&format!(
+        "agent: controle humano {} ({name})",
+        if s.agent_paused {
+            "assumido"
+        } else {
+            "devolvido"
+        }
+    ));
     unsafe {
         InvalidateRect(s.hwnd, ptr::null(), 0);
     }
