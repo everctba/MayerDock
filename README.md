@@ -405,6 +405,23 @@ também alterna e o botão direito abre o menu.
 - Teste de fumaça: `python scripts\p3_smoke.py` (tema vs registro, badge, favoritos,
   confetti por pixels e launcher abrindo o Notepad).
 
+## Overlay de ações — "screencast key" (v1.5)
+
+Ligue em **bandeja → Mostrar ações do agente (overlay)** (fica salvo em
+`%APPDATA%\MayerDock\overlay.txt`; `MAYERDOCK_OVERLAY=1` liga no start). Quando ligado,
+cada ação do agente vira um **tooltip translúcido que some em ~0,55 s** (janela layered
+click-through, sem roubar foco):
+
+- `click · (x,y)` no ponto do clique;
+- `scroll · delta` no ponto da roda;
+- `capture · captura`, `type · N chars`, `key · 0xNN`, `text · N chars` perto do cursor;
+- fade suave (cor interpolada até sumir) e no máximo 12 tooltips simultâneos.
+
+Também entrou a tool MCP **`scroll`** (`hwnd,x,y,delta`, envio direcionado de
+`WM_MOUSEWHEEL`, sem mover o cursor real) — o overlay mostra o `scroll`.
+Teste de fumaça: `python scripts\overlay_smoke.py` (overlay visível após ações, some
+depois de 1,2 s e toggle pela bandeja).
+
 ## Workspaces por contexto (v1.5)
 
 Ferramentas MCP (requerem o dock aberto):

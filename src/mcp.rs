@@ -29,8 +29,8 @@ use serde_json::{json, Value};
 
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits,
-    GetWindowDC, ReleaseDC, ScreenToClient, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
+    BitBlt, ClientToScreen, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+    GetDIBits, GetWindowDC, ReleaseDC, ScreenToClient, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
     DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
 };
 use windows_sys::Win32::Storage::Xps::PrintWindow;
@@ -48,7 +48,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
     IsWindowVisible, PostMessageW, SendMessageW, SetCursorPos, ShowWindow, BM_CLICK, GWL_EXSTYLE,
     SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNOACTIVATE, WM_CHAR, WM_GETTEXT, WM_GETTEXTLENGTH,
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_SETTEXT, WS_EX_TOOLWINDOW,
+    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_SETTEXT,
+    WS_EX_TOOLWINDOW,
 };
 
 /// `MK_LBUTTON` (windows-sys não expõe direto no módulo de mensagens).
@@ -277,6 +278,15 @@ fn dock_bye() {
 /// Executa uma tool no dock (erro legível quando o dock não está aberto).
 fn dock_tool(tool: &str, args: Value) -> Result<Value, String> {
     dock()?.call(tool, args)
+}
+
+/// Manda uma ação para o overlay "screencast key" do dock (best-effort).
+fn overlay_event(kind: &str, hwnd: Option<HWND>, x: i32, y: i32, text: &str) {
+    let mut args = json!({ "kind": kind, "text": text, "x": x, "y": y });
+    if let Some(target) = hwnd {
+        args["hwnd"] = json!(target as usize);
+    }
+    let _ = dock_tool("overlay_event", args);
 }
 
 /// Atualiza a atividade no HUD do dock, se houver conexão (best-effort).
@@ -606,6 +616,22 @@ fn tools() -> Value {
             }
         },
         {
+            "name": "scroll",
+            "description": "Roda a roda do mouse (WM_MOUSEWHEEL direcionado) em um hwnd, sem \
+                mover o cursor real. delta negativo = para baixo.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hwnd": { "type": "integer" },
+                    "title": { "type": "string" },
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" },
+                    "delta": { "type": "integer" }
+                },
+                "additionalProperties": false
+            }
+        },
+        {
             "name": "type_text",
             "description": "Digita texto em um controle/janela via WM_CHAR direcionado (sem \
                 usar o teclado global).",
@@ -915,6 +941,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
         "control_click" => control_click(args),
         "browser_launch" => browser_launch(args),
         "uia_query" => uia_query(args),
+        "scroll" => scroll(args),
         "uia_invoke" => uia_invoke(args),
         "guardrails_status" => {
             let guardrails = load_guardrails();
@@ -1337,7 +1364,7 @@ fn tool_category(tool: &str) -> &'static str {
         | "uia_query" | "guardrails_status" | "control_status" | "layout_info" => "read",
         "capture_window" => "capture",
         "click" | "type_text" | "send_key" | "set_text" | "control_click" | "global_click"
-        | "global_type" | "global_key" => "ui",
+        | "global_type" | "global_key" | "scroll" => "ui",
         "open_app" | "window_state" => "window",
         "dock_pin"
         | "dock_unpin"
@@ -1585,6 +1612,7 @@ fn capture_window(args: &Value) -> Result<Vec<Value>, String> {
         saved.png.len()
     );
     let data = base64::engine::general_purpose::STANDARD.encode(&saved.png);
+    overlay_event("capture", Some(saved.hwnd), -1, -1, "captura");
     Ok(vec![
         text_content(&untrusted_text(text, "capture_window")),
         json!({ "type": "image", "mimeType": "image/png", "data": data }),
@@ -2683,8 +2711,28 @@ fn click(args: &Value) -> Result<Vec<Value>, String> {
         "mcp: click hwnd=0x{:X} ({cx},{cy})",
         hwnd as usize
     ));
+    overlay_event("click", Some(hwnd), cx, cy, &format!("({cx},{cy})"));
     Ok(vec![text_content(&format!(
         "click em 0x{:X} ({cx},{cy})",
+        hwnd as usize
+    ))])
+}
+
+fn scroll(args: &Value) -> Result<Vec<Value>, String> {
+    let hwnd = ensure_target(args, "scroll")?;
+    let delta = args.get("delta").and_then(Value::as_i64).unwrap_or(-120) as i16;
+    let x = args.get("x").and_then(Value::as_i64).unwrap_or(10) as i32;
+    let y = args.get("y").and_then(Value::as_i64).unwrap_or(10) as i32;
+    let mut point = POINT { x, y };
+    unsafe {
+        ClientToScreen(hwnd, &mut point);
+        let wparam = ((delta as u16 as usize) << 16) & 0xFFFF_0000;
+        let lparam = (((point.y as u16 as u32) << 16) | (point.x as u16 as u32)) as isize;
+        PostMessageW(hwnd, WM_MOUSEWHEEL, wparam, lparam);
+    }
+    overlay_event("scroll", Some(hwnd), x, y, &format!("{delta}"));
+    Ok(vec![text_content(&format!(
+        "scroll {delta} em 0x{:X} ({x},{y})",
         hwnd as usize
     ))])
 }
@@ -2706,6 +2754,13 @@ fn type_text(args: &Value) -> Result<Vec<Value>, String> {
         hwnd as usize,
         text.chars().count()
     ));
+    overlay_event(
+        "type",
+        Some(hwnd),
+        -1,
+        -1,
+        &format!("{} chars", text.chars().count()),
+    );
     Ok(vec![text_content(&format!(
         "digitado em 0x{:X}: {text:?}",
         hwnd as usize
@@ -2742,6 +2797,7 @@ fn send_key(args: &Value) -> Result<Vec<Value>, String> {
         "mcp: send_key hwnd=0x{:X} vk=0x{vk:02X}",
         hwnd as usize
     ));
+    overlay_event("key", Some(hwnd), -1, -1, &format!("0x{vk:02X}"));
     Ok(vec![text_content(&format!(
         "tecla 0x{vk:02X} em 0x{:X}",
         hwnd as usize
@@ -2990,6 +3046,13 @@ fn set_text(args: &Value) -> Result<Vec<Value>, String> {
         hwnd as usize,
         text.chars().count()
     ));
+    overlay_event(
+        "text",
+        Some(hwnd),
+        -1,
+        -1,
+        &format!("{} chars", text.chars().count()),
+    );
     Ok(vec![text_content(&format!(
         "texto definido em 0x{:X}: {text:?}",
         hwnd as usize

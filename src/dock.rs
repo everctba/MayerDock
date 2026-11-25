@@ -14,11 +14,11 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
-    InvalidateRect, SelectObject, SetBkMode, SetTextColor, UpdateWindow, CLEARTYPE_QUALITY,
-    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
-    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FF_DONTCARE, HDC, HFONT,
-    OUT_DEFAULT_PRECIS, PAINTSTRUCT, TRANSPARENT,
+    BeginPaint, ClientToScreen, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
+    FillRect, InvalidateRect, SelectObject, SetBkMode, SetTextColor, UpdateWindow,
+    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER,
+    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FF_DONTCARE,
+    HDC, HFONT, OUT_DEFAULT_PRECIS, PAINTSTRUCT, TRANSPARENT,
 };
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe};
@@ -42,18 +42,20 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, FindWindowW,
-    GetClassNameW, GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageW, GetWindowLongW,
-    GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindow, IsWindowVisible, KillTimer, LoadCursorW, LoadIconW, MessageBoxW, PostMessageW,
-    PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SendMessageW, SetCursor,
-    SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage,
-    EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZENS,
-    IDC_SIZEWE, IDI_APPLICATION, IDYES, MB_ICONQUESTION, MB_ICONWARNING, MB_SETFOREGROUND,
-    MB_TOPMOST, MB_YESNO, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
-    SW_RESTORE, SW_SHOWNOACTIVATE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE,
-    WM_CREATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN,
-    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP,
-    WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    GetClassNameW, GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageW, GetSystemMetrics,
+    GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsIconic, IsWindow, IsWindowVisible, KillTimer, LoadCursorW, LoadIconW, MessageBoxW,
+    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SendMessageW, SetCursor,
+    SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
+    TranslateMessage, EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST,
+    IDC_ARROW, IDC_SIZENS, IDC_SIZEWE, IDI_APPLICATION, IDYES, LWA_COLORKEY, MB_ICONQUESTION,
+    MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MSG, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER,
+    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
     WS_POPUP,
 };
 
@@ -73,6 +75,8 @@ const MAX_W: i32 = 1200;
 const TIMER_TICK: usize = 1;
 /// Timer curto do confetti (partículas do fim de sessão).
 const TIMER_CONFETTI: usize = 2;
+/// Timer do overlay de ações (screencast key).
+const TIMER_OVERLAY: usize = 3;
 const HOTKEY_ID: i32 = 1;
 const HOTKEY_STOP_ID: i32 = 2;
 /// Undo/redo de layout (Memento) e cancelamento de edição.
@@ -126,6 +130,8 @@ const IDM_TOGGLE: usize = 102;
 const IDM_STOP_AGENT: usize = 103;
 /// "Assumir/devolver controle" (pair testing).
 const IDM_CONTROL: usize = 104;
+/// Liga/desliga o overlay de ações do agente.
+const IDM_OVERLAY: usize = 105;
 /// Favoritos do launcher (menu): 200 + índice.
 const IDM_FAVORITE_BASE: usize = 200;
 const IDM_FAVORITE_LAST: usize = 208;
@@ -156,6 +162,15 @@ struct LayoutSnapshot {
     width: i32,
     split0: i32,
     split1: i32,
+}
+
+/// Tooltip efêmero do "screencast key" (overlay de ações do agente).
+#[derive(Clone)]
+struct OverlayEvent {
+    text: String,
+    x: i32,
+    y: i32,
+    until: std::time::Instant,
 }
 
 struct State {
@@ -195,6 +210,10 @@ struct State {
     confetti_summary: String,
     /// Favoritos do launcher: (rótulo, comando).
     favorites: Vec<(String, String)>,
+    /// Overlay "screencast key": tooltips das ações do agente.
+    overlay_enabled: bool,
+    overlay_hwnd: HWND,
+    overlay_events: Vec<OverlayEvent>,
     slot_count: usize,
     slots: Vec<Option<Slot>>,
     picking: Vec<HWND>,
@@ -303,6 +322,9 @@ impl State {
             confetti_until: None,
             confetti_summary: String::new(),
             favorites: load_favorites(),
+            overlay_enabled: load_overlay_enabled(),
+            overlay_hwnd: ptr::null_mut(),
+            overlay_events: Vec::new(),
             slot_count,
             slots: vec![None; slot_count],
             picking: Vec::new(),
@@ -1797,6 +1819,7 @@ fn on_menu_command(s: &mut State, id: usize) {
         IDM_TOGGLE => toggle_manual(s),
         IDM_STOP_AGENT => stop_agent(s),
         IDM_CONTROL => toggle_human_control(s),
+        IDM_OVERLAY => toggle_overlay(s),
         IDM_FAVORITE_BASE..=IDM_FAVORITE_LAST => {
             if let Some((label, command)) = s.favorites.get(id - IDM_FAVORITE_BASE).cloned() {
                 win::log(&format!("launcher: favorito {label:?}"));
@@ -2328,6 +2351,7 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
             "dock_release_all" => "liberando janelas",
             "status" => "consultando dock",
             "session_hello" => "conectando",
+            "overlay_event" => "mostrando ação",
             other => other,
         };
         agent.activity = label.to_string();
@@ -2631,6 +2655,10 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                 ok(json!({ "granted": false }))
             }
         }
+        "overlay_event" => {
+            overlay_add(s, req);
+            ok(json!({ "shown": s.overlay_enabled }))
+        }
         other => err(&format!("tool desconhecida: {other}")),
     }
 }
@@ -2732,6 +2760,8 @@ fn toggle_human_control(s: &mut State) {
 fn cleanup(s: &mut State) {
     unsafe {
         KillTimer(s.hwnd, TIMER_TICK);
+        KillTimer(s.hwnd, TIMER_OVERLAY);
+        overlay_destroy(s);
         UnregisterHotKey(s.hwnd, HOTKEY_ID);
         UnregisterHotKey(s.hwnd, HOTKEY_STOP_ID);
         UnregisterHotKey(s.hwnd, HOTKEY_UNDO_ID);
@@ -2941,6 +2971,232 @@ fn paint_confetti(hdc: HDC, s: &State, width: i32, header_h: i32) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Overlay "screencast key": tooltips efêmeros das ações do agente
+// ---------------------------------------------------------------------------
+
+fn overlay_path() -> std::path::PathBuf {
+    crate::config::data_dir().join("overlay.txt")
+}
+
+fn load_overlay_enabled() -> bool {
+    if std::env::var("MAYERDOCK_OVERLAY").ok().as_deref() == Some("1") {
+        return true;
+    }
+    std::fs::read_to_string(overlay_path())
+        .map(|text| text.trim() == "1")
+        .unwrap_or(false)
+}
+
+fn save_overlay_enabled(enabled: bool) {
+    let _ = std::fs::create_dir_all(crate::config::data_dir());
+    let _ = std::fs::write(overlay_path(), if enabled { "1" } else { "0" });
+}
+
+fn overlay_destroy(s: &mut State) {
+    unsafe {
+        if !s.overlay_hwnd.is_null() {
+            DestroyWindow(s.overlay_hwnd);
+            s.overlay_hwnd = ptr::null_mut();
+        }
+    }
+}
+
+fn overlay_ensure(s: &mut State) {
+    if !s.overlay_enabled {
+        return;
+    }
+    unsafe {
+        if s.overlay_hwnd.is_null() {
+            let class = win::wide("MayerDock.Overlay.v1");
+            let wc = WNDCLASSW {
+                style: 0,
+                lpfnWndProc: Some(overlay_proc),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: win::hinstance(),
+                hIcon: ptr::null_mut(),
+                hCursor: ptr::null_mut(),
+                hbrBackground: ptr::null_mut(),
+                lpszMenuName: ptr::null(),
+                lpszClassName: class.as_ptr(),
+            };
+            RegisterClassW(&wc);
+            let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1);
+            let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1);
+            let hwnd = CreateWindowExW(
+                WS_EX_LAYERED
+                    | WS_EX_TRANSPARENT
+                    | WS_EX_TOOLWINDOW
+                    | WS_EX_TOPMOST
+                    | WS_EX_NOACTIVATE,
+                class.as_ptr(),
+                win::wide("MayerDock Overlay").as_ptr(),
+                WS_POPUP,
+                vx,
+                vy,
+                vw,
+                vh,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                win::hinstance(),
+                ptr::null_mut(),
+            );
+            if hwnd.is_null() {
+                win::log("overlay: CreateWindowExW falhou");
+                return;
+            }
+            SetLayeredWindowAttributes(hwnd, rgb(0, 0, 0), 255, LWA_COLORKEY);
+            s.overlay_hwnd = hwnd;
+            win::log("overlay: criado (screencast key)");
+        }
+        ShowWindow(s.overlay_hwnd, SW_SHOWNOACTIVATE);
+        SetWindowPos(
+            s.overlay_hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+        SetTimer(s.hwnd, TIMER_OVERLAY, 50, None);
+        InvalidateRect(s.overlay_hwnd, ptr::null(), 0);
+    }
+}
+
+fn toggle_overlay(s: &mut State) {
+    s.overlay_enabled = !s.overlay_enabled;
+    save_overlay_enabled(s.overlay_enabled);
+    if s.overlay_enabled {
+        overlay_ensure(s);
+    } else {
+        s.overlay_events.clear();
+        unsafe {
+            KillTimer(s.hwnd, TIMER_OVERLAY);
+        }
+        if !s.overlay_hwnd.is_null() {
+            unsafe {
+                ShowWindow(s.overlay_hwnd, SW_HIDE);
+            }
+        }
+    }
+    win::log(&format!(
+        "overlay: {}",
+        if s.overlay_enabled {
+            "ligado"
+        } else {
+            "desligado"
+        }
+    ));
+    unsafe {
+        InvalidateRect(s.hwnd, ptr::null(), 0);
+    }
+}
+
+fn overlay_add(s: &mut State, req: &Value) {
+    let kind = req
+        .pointer("/args/kind")
+        .and_then(Value::as_str)
+        .unwrap_or("action");
+    let text = req
+        .pointer("/args/text")
+        .and_then(Value::as_str)
+        .unwrap_or(kind);
+    let raw_x = req.pointer("/args/x").and_then(Value::as_i64).unwrap_or(-1) as i32;
+    let raw_y = req.pointer("/args/y").and_then(Value::as_i64).unwrap_or(-1) as i32;
+    let mut point = POINT { x: raw_x, y: raw_y };
+    let target = req
+        .pointer("/args/hwnd")
+        .and_then(Value::as_i64)
+        .map(|raw| raw as usize as HWND)
+        .unwrap_or(ptr::null_mut());
+    unsafe {
+        if !target.is_null() && IsWindow(target) != 0 && raw_x >= 0 && raw_y >= 0 {
+            ClientToScreen(target, &mut point);
+        } else if raw_x < 0 || raw_y < 0 {
+            GetCursorPos(&mut point);
+        }
+    }
+    s.overlay_events.push(OverlayEvent {
+        text: format!("{} · {}", kind, text),
+        x: point.x,
+        y: point.y,
+        until: std::time::Instant::now() + std::time::Duration::from_millis(550),
+    });
+    if s.overlay_events.len() > 12 {
+        s.overlay_events.remove(0);
+    }
+    if s.overlay_enabled {
+        overlay_ensure(s);
+    }
+}
+
+unsafe extern "system" fn overlay_proc(
+    hwnd: HWND,
+    msg: u32,
+    _wparam: WPARAM,
+    _lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_PAINT => {
+            let mut ps: PAINTSTRUCT = std::mem::zeroed();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            let mut rc: RECT = std::mem::zeroed();
+            GetClientRect(hwnd, &mut rc);
+            let black = CreateSolidBrush(rgb(0, 0, 0));
+            FillRect(hdc, &rc, black);
+            DeleteObject(black);
+            if let Some(s) = state_opt() {
+                let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                let now = std::time::Instant::now();
+                for event in &s.overlay_events {
+                    let remaining = event.until.saturating_duration_since(now);
+                    if remaining.is_zero() {
+                        continue;
+                    }
+                    let fade = (remaining.as_millis() as f32 / 550.0).clamp(0.0, 1.0);
+                    let base = if event.text.starts_with("click") {
+                        rgb(120, 200, 255)
+                    } else if event.text.starts_with("scroll") {
+                        rgb(120, 255, 160)
+                    } else if event.text.starts_with("capture") {
+                        rgb(255, 220, 120)
+                    } else if event.text.starts_with("type") || event.text.starts_with("key") {
+                        rgb(255, 150, 230)
+                    } else {
+                        rgb(255, 255, 255)
+                    };
+                    let r = ((base & 0xFF) as f32 * fade) as u8;
+                    let g = (((base >> 8) & 0xFF) as f32 * fade) as u8;
+                    let b = (((base >> 16) & 0xFF) as f32 * fade) as u8;
+                    let mut text = RECT {
+                        left: event.x - vx + px(s, 14),
+                        top: event.y - vy - px(s, 12),
+                        right: event.x - vx + px(s, 360),
+                        bottom: event.y - vy + px(s, 12),
+                    };
+                    draw_text(
+                        hdc,
+                        s.font_hint,
+                        rgb(r, g, b),
+                        &event.text,
+                        &mut text,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                    );
+                }
+            }
+            EndPaint(hwnd, &ps);
+            0
+        }
+        WM_ERASEBKGND => 1,
+        _ => DefWindowProcW(hwnd, msg, _wparam, _lparam),
+    }
+}
+
 fn tray_nid(hwnd: HWND) -> NOTIFYICONDATAW {
     let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
     nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
@@ -3017,6 +3273,18 @@ fn tray_menu(s: &mut State) {
             kind: menu::Kind::Item,
         });
     }
+    items.push(menu::MenuItem {
+        label: format!(
+            "{} ações do agente (overlay)",
+            if s.overlay_enabled {
+                "Ocultar"
+            } else {
+                "Mostrar"
+            }
+        ),
+        cmd: IDM_OVERLAY,
+        kind: menu::Kind::Item,
+    });
     items.push(menu::MenuItem {
         label: String::new(),
         cmd: 0,
@@ -3134,6 +3402,25 @@ unsafe extern "system" fn dock_proc(
             0
         }
         WM_TIMER => {
+            if wparam == TIMER_OVERLAY {
+                let now = std::time::Instant::now();
+                s.overlay_events.retain(|event| event.until > now);
+                if s.overlay_events.is_empty() {
+                    unsafe {
+                        KillTimer(s.hwnd, TIMER_OVERLAY);
+                    }
+                    if !s.overlay_hwnd.is_null() {
+                        unsafe {
+                            ShowWindow(s.overlay_hwnd, SW_HIDE);
+                        }
+                    }
+                } else if !s.overlay_hwnd.is_null() {
+                    unsafe {
+                        InvalidateRect(s.overlay_hwnd, ptr::null(), 0);
+                    }
+                }
+                return 0;
+            }
             if wparam == TIMER_CONFETTI {
                 let finished = s
                     .confetti_until
