@@ -210,3 +210,28 @@ estar pronta.
 
 - `--headless`/`--no-ui` para ferramentas sem bandeja/HUD; opcional "dock invisível" para
   testar AppBar sem incomodar o usuário.
+
+---
+
+## T-004 — Diferenciais de UX do dock (pós-1.5 / backlog)
+
+- **Epic no beads:** `md-d33.3` · **Prioridade:** P2/P3 · **Status:** backlog (não bloqueia
+  a v1.5)
+- **Objetivo:** transformar o dock de "organizador" em "workspace visível": layout salvo,
+  slots desiguais, launcher, tema, cor de sessão e elementos de demo/streaming.
+
+| Task (beads) | Feature | Prio | Resumo |
+| --- | --- | --- | --- |
+| `md-d33.3.1` | Workspaces por contexto | P2 | salvar/restaurar janelas+apps+layout por cenário (trabalho/game/reunião) |
+| `md-d33.3.2` | Divisórias arrastáveis | P2 | slots desiguais (70/30), persistência e min/max |
+| `md-d33.3.3` | Launcher no rodapé | P3 | favoritos, grupos e "abrir no slot X" |
+| `md-d33.3.4` | Tema automático | P3 | claro/escuro/cor de destaque, acrílico opcional, snap animado |
+| `md-d33.3.5` | Borda de foco por sessão | P2 | cor por agente/humano (demo/streaming) |
+| `md-d33.3.6` | Badge na bandeja | P3 | sessão/lease/fila no ícone e tooltip |
+| `md-d33.3.7` | Pair testing | P2 | "quem está no controle" no HUD + botão **Assumir** |
+| `md-d33.3.8` | Guardrails | **P1** | bloquear apps sensíveis, redigir regiões/títulos, nunca senha |
+| `md-d33.3.9` | Agent confetti | P3 | resumo animado ao encerrar sessão com ≥10 ações (ativo de marketing) |
+
+Cada task tem descrição e critérios de aceite no beads (`bd show <id>`). Ordem sugerida:
+guardrails → pair testing → workspaces → borda de foco → divisórias → launcher → tema →
+badge → confetti.
