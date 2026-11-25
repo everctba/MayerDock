@@ -405,6 +405,24 @@ também alterna e o botão direito abre o menu.
 - Teste de fumaça: `python scripts\p3_smoke.py` (tema vs registro, badge, favoritos,
   confetti por pixels e launcher abrindo o Notepad).
 
+## Workspaces por contexto (v1.5)
+
+Ferramentas MCP (requerem o dock aberto):
+
+- `workspace_save {name}` — salva largura/splits **e** os apps encaixados (exe + título)
+  em `%APPDATA%\MayerDock\workspaces.json` (commit atômico tmp+rename).
+- `workspace_list` — lista nome, largura, splits e nº de apps.
+- `workspace_restore {name}` — libera os slots, aplica o layout **com aprovação humana**
+  (modal no dock) e reabre/encaixa os apps salvos.
+- `workspace_draft {name}` — o **agente** cria um rascunho em
+  `%APPDATA%\MayerDock\drafts\workspace-<nome>-<ts>.json` (não aplica nada).
+- `workspace_apply_draft {path}` — aplica o rascunho **somente após aprovação humana**
+  no modal; recusado não altera nada.
+
+Sem modal em testes/QA: `MAYERDOCK_APPROVE_AUTO=1` no processo do dock.
+Teste de fumaça: `python scripts\workspace_smoke.py` (salva → libera → restaura →
+draft → apply; valida slot/exe e limpa os arquivos).
+
 ## DPI e escala do Windows
 
 O MayerDock é **per-monitor DPI aware v2** — o `.exe` embute um application manifest com

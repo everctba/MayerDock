@@ -1907,6 +1907,14 @@ fn lease_allow_add(app: &str) {
 }
 
 fn process_label(hwnd: HWND) -> String {
+    std::path::Path::new(&process_path(hwnd))
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Caminho completo do executável dono da janela (para workspaces).
+fn process_path(hwnd: HWND) -> String {
     unsafe {
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, &mut pid);
@@ -1925,11 +1933,7 @@ fn process_label(hwnd: HWND) -> String {
         if ok == 0 {
             return String::new();
         }
-        let path = String::from_utf16_lossy(&buf[..size as usize]);
-        std::path::Path::new(&path)
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default()
+        String::from_utf16_lossy(&buf[..size as usize])
     }
 }
 
@@ -2303,6 +2307,7 @@ fn slots_json(s: &State) -> Value {
                     "occupied": true,
                     "hwnd": slot.hwnd as usize,
                     "title": title,
+                    "exe": process_path(slot.hwnd),
                     "rect": { "left": rect.left, "top": rect.top, "right": rect.right, "bottom": rect.bottom }
                 }));
             }
@@ -2392,6 +2397,68 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                 "activity": agent.activity
             }))
         })),
+        "layout_apply" => {
+            let width = req
+                .pointer("/args/width")
+                .and_then(Value::as_i64)
+                .unwrap_or(s.width as i64) as i32;
+            let split0 = req
+                .pointer("/args/split0")
+                .and_then(Value::as_i64)
+                .unwrap_or(s.split0 as i64) as i32;
+            let split1 = req
+                .pointer("/args/split1")
+                .and_then(Value::as_i64)
+                .unwrap_or(s.split1 as i64) as i32;
+            let name = req
+                .pointer("/args/name")
+                .and_then(Value::as_str)
+                .unwrap_or("workspace");
+            let auto = std::env::var("MAYERDOCK_APPROVE_AUTO")
+                .map(|value| value == "1")
+                .unwrap_or(false);
+            let approved = if auto {
+                true
+            } else {
+                let text = win::wide(&format!(
+                    "Aplicar workspace \"{name}\"?\n\nlargura={width}, splits={split0},{split1}\n\nProposto por agente — aprovação humana necessária."
+                ));
+                let caption = win::wide("MayerDock — aprovar workspace");
+                unsafe {
+                    MessageBoxW(
+                        s.hwnd,
+                        text.as_ptr(),
+                        caption.as_ptr(),
+                        MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND,
+                    ) == IDYES as i32
+                }
+            };
+            if !approved {
+                win::log(&format!("workspace {name:?}: recusado pelo humano"));
+                return ok(json!({ "approved": false, "applied": false }));
+            }
+            begin_edit(s);
+            s.width = width.clamp(MIN_W, MAX_W);
+            s.split0 = split0.clamp(10, 90);
+            s.split1 = split1.clamp(10, 90);
+            if s.split0 >= s.split1 {
+                s.split1 = (s.split0 + 10).min(90);
+            }
+            apply_appbar(s);
+            sync_slot(s, true);
+            commit_edit(s);
+            win::log(&format!(
+                "workspace aplicado: {name} (width={} splits={},{})",
+                s.width, s.split0, s.split1
+            ));
+            ok(json!({
+                "approved": true,
+                "applied": true,
+                "width_logical": s.width,
+                "split0": s.split0,
+                "split1": s.split1
+            }))
+        }
         "list_slots" => ok(slots_json(s)),
         "dock_pin" => match req.pointer("/args/hwnd").and_then(Value::as_i64) {
             Some(raw) => {

@@ -259,7 +259,9 @@ commit atômico, cancel por Esc, undo/redo) e `md-d33.3.2` divisórias arrastáv
 automático (claro/escuro por registro; acrílico/snap ainda backlog), `md-d33.3.3`
 launcher (favoritos via `favorites.txt` no menu; ícones no rodapé ainda backlog) e
 `md-d33.3.9` agent confetti (≥10 ações → partículas + resumo; validados por
-`scripts/p3_smoke.py`).
+`scripts/p3_smoke.py`), `md-d33.3.1` workspaces (save/restore de layout+apps em
+`workspaces.json`) e `md-jcf.4` rascunho de workspace por agente com aprovação no HUD
+(validados por `scripts/workspace_smoke.py`).
 
 ---
 

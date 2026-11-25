@@ -502,6 +502,55 @@ fn tools() -> Value {
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         },
         {
+            "name": "workspace_save",
+            "description": "Salva o layout atual (largura/splits) e os apps encaixados \
+                (exe + título) como workspace nomeado em workspaces.json.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "workspace_list",
+            "description": "Lista os workspaces salvos (largura, splits, nº de slots).",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        },
+        {
+            "name": "workspace_restore",
+            "description": "Restaura um workspace: libera slots, aplica layout (com \
+                aprovação humana) e reabre/encaixa os apps salvos.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "workspace_draft",
+            "description": "Agente cria um rascunho de workspace em drafts/ (não aplica); \
+                o humano aprova depois com workspace_apply_draft.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "workspace_apply_draft",
+            "description": "Aplica um rascunho de workspace com aprovação humana no HUD \
+                (modal); recusado não altera nada.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"],
+                "additionalProperties": false
+            }
+        },
+        {
             "name": "dock_pin",
             "description": "Encaixa uma janela existente no primeiro slot livre do dock, sem \
                 ativá-la. Requer hwnd de list_windows.",
@@ -814,6 +863,23 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
         "layout_info" => {
             let layout = dock_tool("layout_info", json!({}))?;
             Ok(vec![text_content(&pretty(&layout))])
+        }
+        "workspace_save" => {
+            let name = args.get("name").and_then(Value::as_str).unwrap_or("");
+            workspace_save(name)
+        }
+        "workspace_list" => workspace_list(),
+        "workspace_restore" => {
+            let name = args.get("name").and_then(Value::as_str).unwrap_or("");
+            workspace_restore(name)
+        }
+        "workspace_draft" => {
+            let name = args.get("name").and_then(Value::as_str).unwrap_or("");
+            workspace_draft(name)
+        }
+        "workspace_apply_draft" => {
+            let path = args.get("path").and_then(Value::as_str).unwrap_or("");
+            workspace_apply_draft(path)
         }
         "dock_pin" => {
             let hwnd = args
@@ -1273,7 +1339,14 @@ fn tool_category(tool: &str) -> &'static str {
         "click" | "type_text" | "send_key" | "set_text" | "control_click" | "global_click"
         | "global_type" | "global_key" => "ui",
         "open_app" | "window_state" => "window",
-        "dock_pin" | "dock_unpin" | "dock_release_all" => "dock",
+        "dock_pin"
+        | "dock_unpin"
+        | "dock_release_all"
+        | "workspace_save"
+        | "workspace_list"
+        | "workspace_restore"
+        | "workspace_draft"
+        | "workspace_apply_draft" => "dock",
         "browser_launch" => "browser",
         "focus_lease" => "focus",
         _ => "unknown",
@@ -2075,6 +2148,263 @@ pub fn cli_script(
     } else {
         1
     }
+}
+
+// ---------------------------------------------------------------------------
+// Workspaces (md-d33.3.1) + rascunho de agente (md-jcf.4)
+// ---------------------------------------------------------------------------
+
+fn workspaces_path() -> PathBuf {
+    crate::config::data_dir().join("workspaces.json")
+}
+
+fn drafts_dir() -> PathBuf {
+    crate::config::data_dir().join("drafts")
+}
+
+fn write_json_atomic(path: &PathBuf, value: &Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let text = serde_json::to_string_pretty(value).map_err(|err| err.to_string())?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, text.as_bytes()).map_err(|err| format!("não escrevi {:?}: {err}", tmp))?;
+    std::fs::rename(&tmp, path).map_err(|err| format!("não renomeei {:?}: {err}", tmp))
+}
+
+fn load_workspaces() -> Value {
+    std::fs::read_to_string(workspaces_path())
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| json!({ "version": 1, "workspaces": {} }))
+}
+
+/// Coleta layout + slots atuais (exe/título) como documento de workspace.
+fn collect_workspace(name: &str) -> Result<Value, String> {
+    let layout = dock_tool("layout_info", json!({}))?;
+    let slots = dock_tool("list_slots", json!({}))?;
+    let entries: Vec<Value> = slots
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|slot| {
+                    if slot.get("occupied").and_then(Value::as_bool) == Some(true) {
+                        json!({
+                            "exe": slot.get("exe").and_then(Value::as_str).unwrap_or(""),
+                            "title": slot.get("title").and_then(Value::as_str).unwrap_or("")
+                        })
+                    } else {
+                        Value::Null
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(json!({
+        "version": 1,
+        "name": name,
+        "width": layout.get("width_logical").and_then(Value::as_i64).unwrap_or(0),
+        "split0": layout.get("split0").and_then(Value::as_i64).unwrap_or(50),
+        "split1": layout.get("split1").and_then(Value::as_i64).unwrap_or(67),
+        "slots": entries
+    }))
+}
+
+fn launch_and_pin_slots(workspace: &Value) -> Result<(u32, u32), String> {
+    let slots = workspace
+        .get("slots")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut launched = 0u32;
+    let mut failed = 0u32;
+    for entry in slots {
+        let Some(exe) = entry.get("exe").and_then(Value::as_str) else {
+            continue;
+        };
+        if exe.is_empty() {
+            continue;
+        }
+        let basename = std::path::Path::new(exe)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        open_app(&json!({ "path": exe }))?;
+        launched += 1;
+        let mut pinned = false;
+        for _ in 0..60 {
+            std::thread::sleep(Duration::from_millis(250));
+            let pinned_list = dock_tool("list_slots", json!({}))?;
+            let already: Vec<u64> = pinned_list
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|slot| slot.get("hwnd").and_then(Value::as_u64))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for window in list_windows() {
+                if window_process_name(window.hwnd) != basename {
+                    continue;
+                }
+                if already.contains(&(window.hwnd as u64)) {
+                    continue;
+                }
+                let result = dock_tool("dock_pin", json!({ "hwnd": window.hwnd as i64 }))?;
+                if result.get("pinned").and_then(Value::as_bool) == Some(true) {
+                    pinned = true;
+                    break;
+                }
+            }
+            if pinned {
+                break;
+            }
+        }
+        if !pinned {
+            failed += 1;
+        }
+    }
+    Ok((launched, failed))
+}
+
+fn workspace_save(name: &str) -> Result<Vec<Value>, String> {
+    if name.trim().is_empty() {
+        return Err("informe name".to_string());
+    }
+    let workspace = collect_workspace(name)?;
+    let mut doc = load_workspaces();
+    if !doc.get("workspaces").map(Value::is_object).unwrap_or(false) {
+        doc["workspaces"] = json!({});
+    }
+    doc["workspaces"][name] = workspace.clone();
+    write_json_atomic(&workspaces_path(), &doc)?;
+    Ok(vec![text_content(&format!(
+        "workspace {name:?} salvo em {}\r\n{}",
+        workspaces_path().display(),
+        pretty(&workspace)
+    ))])
+}
+
+fn workspace_list() -> Result<Vec<Value>, String> {
+    let doc = load_workspaces();
+    let mut lines = Vec::new();
+    if let Some(map) = doc.get("workspaces").and_then(Value::as_object) {
+        for (name, workspace) in map {
+            lines.push(format!(
+                "{name}\twidth={}\tsplits={},{}\tslots={}",
+                workspace.get("width").and_then(Value::as_i64).unwrap_or(0),
+                workspace
+                    .get("split0")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(50),
+                workspace
+                    .get("split1")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(67),
+                workspace
+                    .get("slots")
+                    .and_then(Value::as_array)
+                    .map(|slots| slots.iter().filter(|slot| !slot.is_null()).count())
+                    .unwrap_or(0)
+            ));
+        }
+    }
+    if lines.is_empty() {
+        lines.push("(nenhum workspace salvo)".to_string());
+    }
+    Ok(vec![text_content(&lines.join("\r\n"))])
+}
+
+fn workspace_restore(name: &str) -> Result<Vec<Value>, String> {
+    let doc = load_workspaces();
+    let workspace = doc
+        .get("workspaces")
+        .and_then(|map| map.get(name))
+        .cloned()
+        .ok_or_else(|| format!("workspace {name:?} não existe"))?;
+    dock_tool("dock_release_all", json!({}))?;
+    let approved = dock_tool(
+        "layout_apply",
+        json!({
+            "name": name,
+            "width": workspace.get("width").and_then(Value::as_i64).unwrap_or(0),
+            "split0": workspace.get("split0").and_then(Value::as_i64).unwrap_or(50),
+            "split1": workspace.get("split1").and_then(Value::as_i64).unwrap_or(67)
+        }),
+    )?;
+    if approved.get("approved").and_then(Value::as_bool) != Some(true) {
+        return Err("restauração recusada pelo humano".to_string());
+    }
+    let (launched, failed) = launch_and_pin_slots(&workspace)?;
+    Ok(vec![text_content(&format!(
+        "workspace {name:?} restaurado (apps={launched}, falhas={failed})"
+    ))])
+}
+
+fn workspace_draft(name: &str) -> Result<Vec<Value>, String> {
+    if name.trim().is_empty() {
+        return Err("informe name".to_string());
+    }
+    let workspace = collect_workspace(name)?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let safe: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let path = drafts_dir().join(format!("workspace-{safe}-{stamp}.json"));
+    write_json_atomic(
+        &path,
+        &json!({
+            "created_by": "agent",
+            "created_at": stamp,
+            "workspace": workspace
+        }),
+    )?;
+    Ok(vec![text_content(&format!(
+        "rascunho criado: {}\r\n{}",
+        path.display(),
+        pretty(&workspace)
+    ))])
+}
+
+fn workspace_apply_draft(path: &str) -> Result<Vec<Value>, String> {
+    let text = std::fs::read_to_string(path).map_err(|err| format!("não li {path:?}: {err}"))?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    let value: Value = serde_json::from_str(text).map_err(|err| format!("JSON inválido: {err}"))?;
+    let workspace = value.get("workspace").cloned().unwrap_or(value);
+    let name = workspace
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("rascunho")
+        .to_string();
+    dock_tool("dock_release_all", json!({}))?;
+    let approved = dock_tool(
+        "layout_apply",
+        json!({
+            "name": name,
+            "width": workspace.get("width").and_then(Value::as_i64).unwrap_or(0),
+            "split0": workspace.get("split0").and_then(Value::as_i64).unwrap_or(50),
+            "split1": workspace.get("split1").and_then(Value::as_i64).unwrap_or(67)
+        }),
+    )?;
+    if approved.get("approved").and_then(Value::as_bool) != Some(true) {
+        return Err("rascunho recusado pelo humano (nada aplicado)".to_string());
+    }
+    let (launched, failed) = launch_and_pin_slots(&workspace)?;
+    Ok(vec![text_content(&format!(
+        "rascunho {name:?} aplicado (apps={launched}, falhas={failed})"
+    ))])
 }
 
 fn capture(hwnd: HWND, method: &str) -> Result<(Vec<u8>, u32, u32, f64, &'static str), String> {
