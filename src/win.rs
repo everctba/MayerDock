@@ -15,6 +15,28 @@ use windows_sys::Win32::Storage::FileSystem::{CreateFileW, WriteFile};
 use windows_sys::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
 use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+
+/// Tema do Windows (claro/escuro) via `AppsUseLightTheme` no registro.
+pub fn theme_is_dark() -> bool {
+    let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
+    let value = wide("AppsUseLightTheme");
+    let mut data: u32 = 1;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let mut kind: u32 = 0;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_DWORD,
+            &mut kind,
+            &mut data as *mut u32 as *mut core::ffi::c_void,
+            &mut size,
+        )
+    };
+    status == 0 && data == 0
+}
 
 /// Classe da janela do dock.
 pub const CLASS_DOCK: &str = "MayerDock.DockWindow.v1";

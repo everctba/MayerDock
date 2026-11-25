@@ -254,7 +254,12 @@ validado por `scripts/focus_border_smoke.py`), `md-d33.3.7` Pair testing (botão
 HUD, gate das tools do agente e tool `control_status`; validado por
 `scripts/pair_testing_smoke.py`), `md-d33.3.11` PreviewSession (Unit of Work + Memento:
 commit atômico, cancel por Esc, undo/redo) e `md-d33.3.2` divisórias arrastáveis
-(percentuais `splits=` no config; validados por `scripts/layout_session_smoke.py`).
+(percentuais `splits=` no config; validados por `scripts/layout_session_smoke.py`),
+`md-d33.3.6` badge na bandeja (tooltip dinâmico + menu Assumir), `md-d33.3.4` tema
+automático (claro/escuro por registro; acrílico/snap ainda backlog), `md-d33.3.3`
+launcher (favoritos via `favorites.txt` no menu; ícones no rodapé ainda backlog) e
+`md-d33.3.9` agent confetti (≥10 ações → partículas + resumo; validados por
+`scripts/p3_smoke.py`).
 
 ---
 

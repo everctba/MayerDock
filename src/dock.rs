@@ -35,10 +35,10 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MOD_NOREPEAT, MOD_SHIFT,
 };
 use windows_sys::Win32::UI::Shell::{
-    SHAppBarMessage, SHQueryUserNotificationState, Shell_NotifyIconW, ABE_RIGHT, ABM_NEW,
-    ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS, ABN_FULLSCREENAPP, ABN_POSCHANGED, ABN_STATECHANGE,
-    APPBARDATA, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
-    QUNS_RUNNING_D3D_FULL_SCREEN,
+    SHAppBarMessage, SHQueryUserNotificationState, ShellExecuteW, Shell_NotifyIconW, ABE_RIGHT,
+    ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS, ABN_FULLSCREENAPP, ABN_POSCHANGED,
+    ABN_STATECHANGE, APPBARDATA, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NOTIFYICONDATAW, QUNS_RUNNING_D3D_FULL_SCREEN,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, FindWindowW,
@@ -71,6 +71,8 @@ const EDGE_GRAB: i32 = 6;
 const MIN_W: i32 = 240;
 const MAX_W: i32 = 1200;
 const TIMER_TICK: usize = 1;
+/// Timer curto do confetti (partículas do fim de sessão).
+const TIMER_CONFETTI: usize = 2;
 const HOTKEY_ID: i32 = 1;
 const HOTKEY_STOP_ID: i32 = 2;
 /// Undo/redo de layout (Memento) e cancelamento de edição.
@@ -122,6 +124,11 @@ const IDM_EXIT: usize = 101;
 const IDM_TOGGLE: usize = 102;
 /// "Parar agente" (kill switch pelo menu da bandeja).
 const IDM_STOP_AGENT: usize = 103;
+/// "Assumir/devolver controle" (pair testing).
+const IDM_CONTROL: usize = 104;
+/// Favoritos do launcher (menu): 200 + índice.
+const IDM_FAVORITE_BASE: usize = 200;
+const IDM_FAVORITE_LAST: usize = 208;
 /// "Divisões: 1/2/3" → 110..112.
 const IDM_SLOTS_BASE: usize = 110;
 const IDM_SLOTS_LAST: usize = 112;
@@ -180,6 +187,14 @@ struct State {
     /// Pilhas de undo/redo (Memento) por commit de layout.
     undo_stack: Vec<LayoutSnapshot>,
     redo_stack: Vec<LayoutSnapshot>,
+    /// Tema claro/escuro atual (acompanha o Windows a cada ~5 s).
+    theme_dark: bool,
+    theme_check: u32,
+    /// Confetti de fim de sessão (visual + resumo no HUD).
+    confetti_until: Option<std::time::Instant>,
+    confetti_summary: String,
+    /// Favoritos do launcher: (rótulo, comando).
+    favorites: Vec<(String, String)>,
     slot_count: usize,
     slots: Vec<Option<Slot>>,
     picking: Vec<HWND>,
@@ -283,6 +298,11 @@ impl State {
             edit_pre: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            theme_dark: win::theme_is_dark(),
+            theme_check: 0,
+            confetti_until: None,
+            confetti_summary: String::new(),
+            favorites: load_favorites(),
             slot_count,
             slots: vec![None; slot_count],
             picking: Vec::new(),
@@ -1194,7 +1214,29 @@ fn paint(hwnd: HWND, s: &mut State) {
         let w = rc.right - rc.left;
         let h = rc.bottom - rc.top;
 
-        let bg = CreateSolidBrush(rgb(18, 18, 22));
+        // Tema automático (claro/escuro do Windows); atualizado a cada ~5 s.
+        let dark = s.theme_dark;
+        let bg_color = if dark {
+            rgb(18, 18, 22)
+        } else {
+            rgb(244, 245, 249)
+        };
+        let header_color = if dark {
+            rgb(30, 30, 36)
+        } else {
+            rgb(230, 232, 240)
+        };
+        let title_color = if dark {
+            rgb(236, 238, 244)
+        } else {
+            rgb(24, 26, 34)
+        };
+        let dim_color = if dark {
+            rgb(146, 150, 164)
+        } else {
+            rgb(88, 92, 106)
+        };
+        let bg = CreateSolidBrush(bg_color);
         FillRect(hdc, &rc, bg);
         DeleteObject(bg);
 
@@ -1208,7 +1250,7 @@ fn paint(hwnd: HWND, s: &mut State) {
             right: w,
             bottom: header_h,
         };
-        let hb = CreateSolidBrush(rgb(30, 30, 36));
+        let hb = CreateSolidBrush(header_color);
         FillRect(hdc, &hdr, hb);
         DeleteObject(hb);
 
@@ -1240,7 +1282,7 @@ fn paint(hwnd: HWND, s: &mut State) {
         draw_text(
             hdc,
             s.font_title,
-            rgb(236, 238, 244),
+            title_color,
             "MayerDock",
             &mut title,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
@@ -1389,11 +1431,18 @@ fn paint(hwnd: HWND, s: &mut State) {
             draw_text(
                 hdc,
                 s.font_hint,
-                rgb(146, 150, 164),
+                dim_color,
                 "Nenhuma janela encaixada.\r\n\r\nClique aqui ou no ☰\r\npara escolher uma janela\r\ne ocupar o dock.",
                 &mut hint,
                 DT_CENTER | DT_WORDBREAK | DT_NOPREFIX,
             );
+        }
+
+        // Confetti de fim de sessão (>= 10 ações) por ~0,7 s no cabeçalho.
+        if let Some(until) = s.confetti_until {
+            if std::time::Instant::now() < until {
+                paint_confetti(hdc, s, w, header_h);
+            }
         }
 
         EndPaint(hwnd, &ps);
@@ -1696,16 +1745,28 @@ fn open_menu(s: &mut State) {
         }
     }
 
-    items.push(menu::MenuItem {
-        label: String::new(),
-        cmd: 0,
-        kind: menu::Kind::Sep,
-    });
-    items.push(menu::MenuItem {
-        label: "Sair do MayerDock".to_string(),
-        cmd: IDM_EXIT,
-        kind: menu::Kind::Item,
-    });
+    if !s.favorites.is_empty() {
+        items.push(menu::MenuItem {
+            label: String::new(),
+            cmd: 0,
+            kind: menu::Kind::Sep,
+        });
+        items.push(menu::MenuItem {
+            label: "Launcher".to_string(),
+            cmd: 0,
+            kind: menu::Kind::Header,
+        });
+        for (index, (label, _)) in s.favorites.iter().enumerate() {
+            if IDM_FAVORITE_BASE + index > IDM_FAVORITE_LAST {
+                break;
+            }
+            items.push(menu::MenuItem {
+                label: format!("▶ {label}"),
+                cmd: IDM_FAVORITE_BASE + index,
+                kind: menu::Kind::Item,
+            });
+        }
+    }
 
     // Ancora no botão ☰: o menu abre à esquerda do dock.
     let mut wr = RECT {
@@ -1735,6 +1796,13 @@ fn on_menu_command(s: &mut State, id: usize) {
         },
         IDM_TOGGLE => toggle_manual(s),
         IDM_STOP_AGENT => stop_agent(s),
+        IDM_CONTROL => toggle_human_control(s),
+        IDM_FAVORITE_BASE..=IDM_FAVORITE_LAST => {
+            if let Some((label, command)) = s.favorites.get(id - IDM_FAVORITE_BASE).cloned() {
+                win::log(&format!("launcher: favorito {label:?}"));
+                launch_favorite(&command);
+            }
+        }
         IDM_SLOTS_BASE..=IDM_SLOTS_LAST => set_slot_count(s, id - IDM_SLOTS_BASE + 1),
         IDM_RELEASE_BASE..=IDM_RELEASE_LAST => release_slot(s, id - IDM_RELEASE_BASE),
         _ if id >= IDM_WINDOW_BASE => {
@@ -2310,7 +2378,11 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                 "slot_rects": slot_rects,
                 "undo": s.undo_stack.len(),
                 "redo": s.redo_stack.len(),
-                "editing": s.edit_pre.is_some()
+                "editing": s.edit_pre.is_some(),
+                "theme": if s.theme_dark { "dark" } else { "light" },
+                "confetti": s.confetti_until.is_some(),
+                "tray_tip": tray_tip(s),
+                "favorites": s.favorites.iter().map(|(label, _)| label.clone()).collect::<Vec<String>>()
             }))
         }
         "control_status" => ok(json!({
@@ -2369,11 +2441,11 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                 pid,
             });
             win::log(&format!("agent: sessão iniciada ({name}, pid {pid})"));
+            tray_update(s);
             ok(json!({ "session": name }))
         }
         "session_bye" => {
-            s.agent = None;
-            win::log("agent: sessão encerrada");
+            finish_agent_session(s, "session_bye");
             ok(json!({ "bye": true }))
         }
         "activity" => {
@@ -2388,6 +2460,7 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                     agent.captures = captures.min(u32::MAX as u64) as u32;
                 }
             }
+            tray_update(s);
             ok(json!({ "ok": true }))
         }
         "focus_lease" => {
@@ -2484,6 +2557,7 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                     "agent: lease concedido ({seconds}s) hwnd=0x{:X}",
                     hwnd as usize
                 ));
+                tray_update(s);
                 ok(json!({ "granted": true, "seconds": seconds }))
             } else {
                 win::log("agent: lease negado pelo usuário");
@@ -2518,6 +2592,7 @@ fn expire_lease(s: &mut State) {
         "agent: lease expirado (foco restaurado; era hwnd=0x{:X})",
         leased as usize
     ));
+    tray_update(s);
     unsafe {
         InvalidateRect(s.hwnd, ptr::null(), 0);
     }
@@ -2548,12 +2623,8 @@ fn stop_agent(s: &mut State) {
             }
         }
     }
-    s.agent = None;
-    s.agent_paused = false;
+    finish_agent_session(s, "Parar");
     agent_pipe_close();
-    unsafe {
-        InvalidateRect(s.hwnd, ptr::null(), 0);
-    }
 }
 
 /// Pair testing: humano assume/devolve o controle (pausa tools do agente).
@@ -2585,6 +2656,7 @@ fn toggle_human_control(s: &mut State) {
             "devolvido"
         }
     ));
+    tray_update(s);
     unsafe {
         InvalidateRect(s.hwnd, ptr::null(), 0);
     }
@@ -2643,6 +2715,165 @@ fn copy_wide(dst: &mut [u16], text: &str) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Badge da bandeja + launcher de favoritos + confetti
+// ---------------------------------------------------------------------------
+
+fn favorites_path() -> std::path::PathBuf {
+    crate::config::data_dir().join("favorites.txt")
+}
+
+fn load_favorites() -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(favorites_path()) else {
+        return Vec::new();
+    };
+    let mut favorites = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (label, command) = match line.split_once('|') {
+            Some((label, command)) => (label.trim(), command.trim()),
+            None => (line, line),
+        };
+        if !command.is_empty() {
+            favorites.push((label.to_string(), command.to_string()));
+        }
+        if favorites.len() >= 8 {
+            break;
+        }
+    }
+    favorites
+}
+
+fn launch_favorite(command: &str) {
+    let file = crate::win::wide(command);
+    let verb = crate::win::wide("open");
+    unsafe {
+        ShellExecuteW(
+            ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            SW_SHOWNOACTIVATE,
+        );
+    }
+    win::log(&format!("launcher: abrindo favorito {command:?}"));
+}
+
+fn tray_tip(s: &State) -> String {
+    match &s.agent {
+        Some(agent) => {
+            let mut tip = if s.agent_paused {
+                format!("MayerDock — humano no controle ({})", agent.name)
+            } else {
+                format!("MayerDock — ● {}", agent.name)
+            };
+            if let Some(lease) = &s.lease {
+                let remaining = lease
+                    .until
+                    .saturating_duration_since(std::time::Instant::now());
+                tip.push_str(&format!(" · lease {}s", remaining.as_secs() + 1));
+            }
+            tip.push_str(&format!(" · {} ações", agent.actions));
+            tip
+        }
+        None => "MayerDock — ocioso".to_string(),
+    }
+}
+
+fn tray_update(s: &State) {
+    let mut nid = tray_nid(s.hwnd);
+    nid.uFlags = NIF_TIP;
+    copy_wide(&mut nid.szTip, &tray_tip(s));
+    unsafe {
+        Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+}
+
+/// Encerra a sessão (bye/kill) guardando stats e disparando o confetti.
+fn finish_agent_session(s: &mut State, reason: &str) {
+    let stats = s
+        .agent
+        .as_ref()
+        .map(|agent| (agent.name.clone(), agent.actions, agent.captures));
+    s.agent = None;
+    s.agent_paused = false;
+    if let Some((name, actions, captures)) = stats {
+        if actions >= 10 {
+            let summary =
+                format!("sessão de {name} encerrada — {actions} ações, {captures} capturas");
+            win::log(&format!("confetti: {summary}"));
+            s.confetti_summary = summary;
+            s.confetti_until =
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(700));
+            unsafe {
+                SetTimer(s.hwnd, TIMER_CONFETTI, 40, None);
+            }
+        }
+    }
+    tray_update(s);
+    unsafe {
+        InvalidateRect(s.hwnd, ptr::null(), 0);
+    }
+    win::log(&format!("agent: sessão encerrada ({reason})"));
+}
+
+/// Partículas determinísticas de 0,5–0,7 s no cabeçalho (GDI, sem deps).
+fn paint_confetti(hdc: HDC, s: &State, width: i32, header_h: i32) {
+    unsafe {
+        let palette = [
+            rgb(74, 112, 240),
+            rgb(245, 158, 11),
+            rgb(34, 197, 94),
+            rgb(236, 72, 153),
+            rgb(139, 92, 246),
+            rgb(59, 130, 246),
+        ];
+        let elapsed = s
+            .confetti_until
+            .and_then(|until| until.checked_duration_since(std::time::Instant::now()))
+            .map(|_| 0)
+            .unwrap_or(0);
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15 ^ elapsed as u64;
+        for index in 0..48u32 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let x = (seed % width.max(1) as u64) as i32;
+            let y = ((seed >> 16) % header_h.max(1) as u64) as i32;
+            let size = px(s, 3).max(2);
+            let brush = CreateSolidBrush(palette[(index as usize) % palette.len()]);
+            let particle = RECT {
+                left: x,
+                top: y,
+                right: x + size,
+                bottom: y + size,
+            };
+            FillRect(hdc, &particle, brush);
+            DeleteObject(brush);
+        }
+        if !s.confetti_summary.is_empty() {
+            let mut summary = RECT {
+                left: px(s, 14),
+                top: 0,
+                right: width - px(s, 150),
+                bottom: header_h,
+            };
+            draw_text(
+                hdc,
+                s.font_hint,
+                rgb(245, 248, 255),
+                &s.confetti_summary,
+                &mut summary,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+            );
+        }
+    }
+}
+
 fn tray_nid(hwnd: HWND) -> NOTIFYICONDATAW {
     let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
     nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
@@ -2694,8 +2925,28 @@ fn tray_menu(s: &mut State) {
     });
     if let Some(agent) = &s.agent {
         items.push(menu::MenuItem {
+            label: if s.agent_paused {
+                format!("Devolver controle ({})", agent.name)
+            } else {
+                format!("Assumir controle ({})", agent.name)
+            },
+            cmd: IDM_CONTROL,
+            kind: menu::Kind::Item,
+        });
+        items.push(menu::MenuItem {
             label: format!("Parar agente ({})", agent.name),
             cmd: IDM_STOP_AGENT,
+            kind: menu::Kind::Item,
+        });
+    }
+    // Launcher: favoritos (favorites.txt) no menu da bandeja.
+    for (index, (label, _)) in s.favorites.iter().enumerate() {
+        if IDM_FAVORITE_BASE + index > IDM_FAVORITE_LAST {
+            break;
+        }
+        items.push(menu::MenuItem {
+            label: format!("▶ {label}"),
+            cmd: IDM_FAVORITE_BASE + index,
             kind: menu::Kind::Item,
         });
     }
@@ -2816,6 +3067,35 @@ unsafe extern "system" fn dock_proc(
             0
         }
         WM_TIMER => {
+            if wparam == TIMER_CONFETTI {
+                let finished = s
+                    .confetti_until
+                    .map(|until| std::time::Instant::now() >= until)
+                    .unwrap_or(true);
+                if finished {
+                    s.confetti_until = None;
+                    s.confetti_summary.clear();
+                    unsafe {
+                        KillTimer(s.hwnd, TIMER_CONFETTI);
+                    }
+                }
+                unsafe {
+                    InvalidateRect(s.hwnd, ptr::null(), 0);
+                }
+                return 0;
+            }
+            // Tema automático: consulta o registro a cada ~5 s.
+            s.theme_check = s.theme_check.wrapping_add(1);
+            if s.theme_check % 5 == 0 {
+                let dark = win::theme_is_dark();
+                if dark != s.theme_dark {
+                    s.theme_dark = dark;
+                    win::log(&format!("tema: {}", if dark { "escuro" } else { "claro" }));
+                    unsafe {
+                        InvalidateRect(s.hwnd, ptr::null(), 0);
+                    }
+                }
+            }
             expire_lease(s);
             update_visibility(s);
             sync_slot(s, false);

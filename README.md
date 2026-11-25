@@ -381,6 +381,24 @@ também alterna e o botão direito abre o menu.
 - Teste de fumaça: `python scripts\layout_session_smoke.py` (drag+commit, undo, Esc,
   commit/undo de largura).
 
+## Personalização, launcher e confetti (v1.5)
+
+- **Tema automático:** o dock lê `AppsUseLightTheme` do Windows a cada ~5 s e alterna
+  claro/escuro (fundo, cabeçalho, textos). Acrílico/blur e animação de snap ficam para
+  depois (overhead/risco de contraste).
+- **Badge na bandeja:** tooltip dinâmico — `● <agente> · lease Ns · N ações`, `humano no
+  controle` ou `ocioso`. O menu da bandeja ganha **Assumir/Devolver controle** e
+  **Parar agente**.
+- **Launcher (favoritos):** crie `%APPDATA%\MayerDock\favorites.txt` com linhas
+  `rótulo|comando` (ex.: `Notepad|notepad.exe`). Os favoritos aparecem no menu da bandeja
+  e no **☰** e abrem sem ativar o dock. Ícones fixos no rodapé ainda são backlog
+  (`md-d33.3.3` mantém a parte de UI).
+- **Agent confetti:** ao encerrar a sessão (`session_bye` ou **■**) com **≥ 10 ações**,
+  o cabeçalho ganha ~0,7 s de partículas (GDI, sem dependências) e o resumo
+  `sessão de <agente> encerrada — N ações, M capturas`.
+- Teste de fumaça: `python scripts\p3_smoke.py` (tema vs registro, badge, favoritos,
+  confetti por pixels e launcher abrindo o Notepad).
+
 ## DPI e escala do Windows
 
 O MayerDock é **per-monitor DPI aware v2** — o `.exe` embute um application manifest com
