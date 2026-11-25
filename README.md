@@ -294,6 +294,11 @@ slots/HUD/lease/workspace. Para remover, tire o pacote de `dependencies`/`bundle
 
 </details>
 
+**Instruções prontas no app:** no menu **☰** do dock ou no menu da bandeja, clique em
+**Instruções MCP (copiar)** — abre um diálogo com o comando stdio, o snippet
+`.mcp.json`, a opção DSH e a política recomendada para o agente. O botão **⧉ Copiar**
+manda o texto inteiro para a área de transferência (vira “✓ Copiado”).
+
 Próxima fatia: input direcionado (UIA/CDP) e **focus lease** com modal de aprovação.
 Detalhes em [docs/AGENT-MCP.md](docs/AGENT-MCP.md).
 

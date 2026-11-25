@@ -132,6 +132,8 @@ const IDM_STOP_AGENT: usize = 103;
 const IDM_CONTROL: usize = 104;
 /// Liga/desliga o overlay de ações do agente.
 const IDM_OVERLAY: usize = 105;
+/// Abre o diálogo com instruções MCP (copiar).
+const IDM_MCP_HELP: usize = 106;
 /// Favoritos do launcher (menu): 200 + índice.
 const IDM_FAVORITE_BASE: usize = 200;
 const IDM_FAVORITE_LAST: usize = 208;
@@ -1836,6 +1838,7 @@ fn on_menu_command(s: &mut State, id: usize) {
         IDM_STOP_AGENT => stop_agent(s),
         IDM_CONTROL => toggle_human_control(s),
         IDM_OVERLAY => toggle_overlay(s),
+        IDM_MCP_HELP => crate::mcp_help::show(s.hwnd),
         IDM_FAVORITE_BASE..=IDM_FAVORITE_LAST => {
             if let Some((label, command)) = s.favorites.get(id - IDM_FAVORITE_BASE).cloned() {
                 win::log(&format!("launcher: favorito {label:?}"));
@@ -3327,6 +3330,11 @@ fn tray_menu(s: &mut State) {
         label: String::new(),
         cmd: 0,
         kind: menu::Kind::Sep,
+    });
+    items.push(menu::MenuItem {
+        label: "Instruções MCP (copiar)".to_string(),
+        cmd: IDM_MCP_HELP,
+        kind: menu::Kind::Item,
     });
     items.push(menu::MenuItem {
         label: "Sair do MayerDock".to_string(),

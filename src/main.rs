@@ -5,6 +5,7 @@
 mod config;
 mod dock;
 mod mcp;
+mod mcp_help;
 mod menu;
 mod win;
 
