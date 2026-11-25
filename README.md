@@ -236,12 +236,34 @@ Config de exemplo:
 {
   "mcpServers": {
     "mayerdock": {
+      "type": "stdio",
       "command": "H:\\caminho\\para\\dist\\MayerDock\\mayerdock.exe",
       "args": ["--mcp"]
     }
   }
 }
 ```
+
+**No DSH (DeepSeek Harness)** o MCP é um patch de perfil (não `.mcp.json`). Adicione em
+`%USERPROFILE%\.dsh\profiles\<perfil>\cordis.patch.yml`:
+
+```yaml
+- insert:
+    - id: mayerdock-mcp
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: mayerdock
+        transport: stdio
+        command: 'H:\TUDO\Codigo\Codigo\FluxTV\MayerDock\dist\MayerDock\mayerdock.exe'
+        args:
+          - '--mcp'
+        toolCallTimeoutMs: 120000
+        failOnStartupError: false
+```
+
+Depois **abra uma sessão nova** (ou reinicie o DSH): o cliente MCP sobe o sidecar e as
+tools aparecem prefixadas (`mcp__mayerdock__*`). O dock precisa estar aberto para
+slots/HUD/lease/workspace.
 
 Próxima fatia: input direcionado (UIA/CDP) e **focus lease** com modal de aprovação.
 Detalhes em [docs/AGENT-MCP.md](docs/AGENT-MCP.md).
