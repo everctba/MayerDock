@@ -335,6 +335,16 @@ preto no BitBlt** (PrintWindow ok) — o caso que justifica WGC para apps GPU/co
 Chrome já aberto capturou por PrintWindow, mas `uia_query` falhou nele (usar CDP).
 Reprodução: `python scripts\compat_matrix.py`.
 
+**Guardrails (md-d33.3.8) — implementado:** config em
+`%APPDATA%\MayerDock\guardrails.json` com `blocked_processes`,
+`blocked_title_patterns`, `redact_titles`, `redact_regions` (coordenadas de tela) e
+`disable_defaults`. Janelas bloqueadas somem do inventário e as tools de captura/input/UIA
+recusam com `guardrails: ...`; títulos sensíveis aparecem como `«redigido»`; regiões são
+pintadas de preto **antes** do PNG sair do processo; negações vão para
+`%APPDATA%\MayerDock\audit.jsonl`. Tool `guardrails_status` mostra as regras.
+Validado com `scripts/guardrails_smoke.py` (blocklist oculta + captura negada + auditoria
++ redaction preservando o resto da imagem).
+
 **Empacotamento validado:** `.\build.ps1 -Installer -Msix` continua funcionando com o
 sidecar — Inno 2,47 MB e MSIX 0,55 MB (exe 908 KB, deps offline). Corrigido bug do
 `build.ps1` (`$installer` colidia com o switch `-Installer`, como antes com `$msix`).

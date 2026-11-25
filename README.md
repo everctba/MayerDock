@@ -233,6 +233,34 @@ Config de exemplo:
 Próxima fatia: input direcionado (UIA/CDP) e **focus lease** com modal de aprovação.
 Detalhes em [docs/AGENT-MCP.md](docs/AGENT-MCP.md).
 
+## Guardrails (v1.5)
+
+O Agent Workspace tem uma camada de proteção configurável em
+`%APPDATA%\MayerDock\guardrails.json` (merge com defaults; `"disable_defaults": true`
+usa só o arquivo):
+
+```json
+{
+  "blocked_processes": ["keepass", "1password", "bitwarden"],
+  "blocked_title_patterns": ["senha", "password", "nubank", "itau"],
+  "redact_titles": ["senha", "password", "token"],
+  "redact_regions": [{ "left": 0, "top": 0, "right": 300, "bottom": 80 }]
+}
+```
+
+- **Blocklist** (processo ou título): a janela **não aparece** em `list_windows` e
+  `capture_window`, `click`, `type_text`, `send_key`, `set_text`, `control_click`,
+  `get_text`, `wait_for`, `uia_query`/`uia_invoke` respondem erro
+  `guardrails: ...` (o `window_state close` continua permitido).
+- **Redaction de título:** títulos que casarem com `redact_titles` aparecem como
+  `«redigido»` nas listas.
+- **Redaction de região:** retângulos em **coordenadas de tela** são pintados de preto na
+  captura **antes** de o PNG sair do processo (útil para senha/segredo visível).
+- **Auditoria:** toda tentativa negada vira uma linha JSON em
+  `%APPDATA%\MayerDock\audit.jsonl` (`ts`, `tool`, `hwnd`, `allowed`, `detail`).
+- Ver regras em vigor: tool MCP `guardrails_status`.
+- Teste de fumaça: `python scripts\guardrails_smoke.py`.
+
 ## Instalador
 
 Gerado com **Inno Setup 6** pela flag `-Installer`. O `build.ps1` procura o `ISCC.exe` em

@@ -27,13 +27,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use serde_json::{json, Value};
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits,
     GetWindowDC, ReleaseDC, ScreenToClient, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
     DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
 };
 use windows_sys::Win32::Storage::Xps::PrintWindow;
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     keybd_event, mouse_event, IsWindowEnabled, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT,
@@ -661,6 +664,12 @@ fn tools() -> Value {
                 "required": ["name"],
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "guardrails_status",
+            "description": "Mostra as regras de guardrails em vigor (blocklist de apps/títulos, \
+                redaction de regiões/títulos) e o caminho do log de auditoria.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }
     ])
 }
@@ -751,6 +760,29 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
         "browser_launch" => browser_launch(args),
         "uia_query" => uia_query(args),
         "uia_invoke" => uia_invoke(args),
+        "guardrails_status" => {
+            let guardrails = load_guardrails();
+            let regions: Vec<Value> = guardrails
+                .redact_regions
+                .iter()
+                .map(|rect| {
+                    json!({
+                        "left": rect.left,
+                        "top": rect.top,
+                        "right": rect.right,
+                        "bottom": rect.bottom
+                    })
+                })
+                .collect();
+            Ok(vec![text_content(&pretty(&json!({
+                "config": guardrails_config_path().display().to_string(),
+                "audit": audit_log_path().display().to_string(),
+                "blocked_processes": guardrails.blocked_processes,
+                "blocked_title_patterns": guardrails.blocked_title_patterns,
+                "redact_titles": guardrails.redact_titles,
+                "redact_regions": regions
+            })))])
+        }
         _ => Err(format!("tool desconhecida: {name}")),
     }
 }
@@ -781,7 +813,273 @@ fn list_windows() -> Vec<WinInfo> {
     unsafe {
         EnumWindows(Some(enum_window), &mut list as *mut Vec<WinInfo> as LPARAM);
     }
+    let guardrails = load_guardrails();
+    list.retain(|window| guardrails_block_reason(window.hwnd, &guardrails).is_none());
+    for window in list.iter_mut() {
+        if is_redacted_title(window.hwnd, &guardrails) {
+            window.title = "«redigido»".to_string();
+        }
+    }
     list
+}
+
+// ---------------------------------------------------------------------------
+// Guardrails (md-d33.3.8): blocklist, redaction de titulos/regioes e auditoria
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct Guardrails {
+    blocked_processes: Vec<String>,
+    blocked_title_patterns: Vec<String>,
+    redact_titles: Vec<String>,
+    redact_regions: Vec<RECT>,
+}
+
+impl Default for Guardrails {
+    fn default() -> Self {
+        Guardrails {
+            blocked_processes: [
+                "keepass",
+                "keepassxc",
+                "1password",
+                "bitwarden",
+                "lastpass",
+                "dashlane",
+                "nordpass",
+                "enpass",
+                "roboform",
+                "protonpass",
+                "keeper",
+            ]
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
+            blocked_title_patterns: [
+                "senha",
+                "password",
+                "1password",
+                "keepass",
+                "bitwarden",
+                "lastpass",
+                "dashlane",
+                "nordpass",
+                "enpass",
+                "roboform",
+                "nubank",
+                "itau",
+                "itaú",
+                "bradesco",
+                "santander",
+                "banco do brasil",
+                "caixa econ",
+                "paypal",
+                "picpay",
+                "mercadopago",
+            ]
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
+            redact_titles: ["senha", "password", "token", "segredo"]
+                .iter()
+                .map(|value| value.to_string())
+                .collect(),
+            redact_regions: Vec::new(),
+        }
+    }
+}
+
+fn guardrails_config_path() -> PathBuf {
+    crate::config::data_dir().join("guardrails.json")
+}
+
+fn audit_log_path() -> PathBuf {
+    crate::config::data_dir().join("audit.jsonl")
+}
+
+fn normalize_guardrails(mut guardrails: Guardrails) -> Guardrails {
+    for list in [
+        &mut guardrails.blocked_processes,
+        &mut guardrails.blocked_title_patterns,
+        &mut guardrails.redact_titles,
+    ] {
+        for value in list.iter_mut() {
+            *value = value.trim().to_lowercase();
+        }
+    }
+    guardrails
+}
+
+fn load_guardrails() -> Guardrails {
+    let mut guardrails = Guardrails::default();
+    let Ok(text) = std::fs::read_to_string(guardrails_config_path()) else {
+        return normalize_guardrails(guardrails);
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return normalize_guardrails(guardrails);
+    };
+    if value
+        .get("disable_defaults")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        guardrails = Guardrails {
+            blocked_processes: Vec::new(),
+            blocked_title_patterns: Vec::new(),
+            redact_titles: Vec::new(),
+            redact_regions: Vec::new(),
+        };
+    }
+    for (key, target) in [
+        ("blocked_processes", &mut guardrails.blocked_processes),
+        (
+            "blocked_title_patterns",
+            &mut guardrails.blocked_title_patterns,
+        ),
+        ("redact_titles", &mut guardrails.redact_titles),
+    ] {
+        if let Some(items) = value.get(key).and_then(Value::as_array) {
+            for item in items {
+                if let Some(text) = item.as_str() {
+                    target.push(text.to_string());
+                }
+            }
+        }
+    }
+    if let Some(regions) = value.get("redact_regions").and_then(Value::as_array) {
+        for region in regions {
+            let get = |name: &str| region.get(name).and_then(Value::as_i64).unwrap_or(0) as i32;
+            let rect = RECT {
+                left: get("left"),
+                top: get("top"),
+                right: get("right"),
+                bottom: get("bottom"),
+            };
+            if rect.right > rect.left && rect.bottom > rect.top {
+                guardrails.redact_regions.push(rect);
+            }
+        }
+    }
+    normalize_guardrails(guardrails)
+}
+
+fn window_process_name(hwnd: HWND) -> String {
+    unsafe {
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 {
+            return String::new();
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return String::new();
+        }
+        let mut buffer = [0u16; 512];
+        let mut size = buffer.len() as u32;
+        let ok =
+            QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut size);
+        CloseHandle(process);
+        if ok == 0 {
+            return String::new();
+        }
+        let path = String::from_utf16_lossy(&buffer[..size as usize]);
+        std::path::Path::new(&path)
+            .file_stem()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default()
+    }
+}
+
+fn guardrails_block_reason(hwnd: HWND, guardrails: &Guardrails) -> Option<String> {
+    let process = window_process_name(hwnd);
+    if let Some(pattern) = guardrails
+        .blocked_processes
+        .iter()
+        .find(|pattern| !pattern.is_empty() && process.contains(pattern.as_str()))
+    {
+        return Some(format!("processo bloqueado ({pattern})"));
+    }
+    let title = window_title(hwnd).to_lowercase();
+    if let Some(pattern) = guardrails
+        .blocked_title_patterns
+        .iter()
+        .find(|pattern| !pattern.is_empty() && title.contains(pattern.as_str()))
+    {
+        return Some(format!("título bloqueado ({pattern})"));
+    }
+    None
+}
+
+fn is_redacted_title(hwnd: HWND, guardrails: &Guardrails) -> bool {
+    let title = window_title(hwnd).to_lowercase();
+    guardrails
+        .redact_titles
+        .iter()
+        .any(|pattern| !pattern.is_empty() && title.contains(pattern.as_str()))
+}
+
+fn audit_guardrail(tool: &str, hwnd: HWND, allowed: bool, detail: &str) {
+    use std::io::Write;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let line = json!({
+        "ts": timestamp,
+        "tool": tool,
+        "hwnd": hwnd as usize,
+        "allowed": allowed,
+        "detail": detail,
+    });
+    let path = audit_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        if let Ok(text) = serde_json::to_string(&line) {
+            let _ = writeln!(file, "{text}");
+        }
+    }
+}
+
+/// Resolve o alvo e aplica os guardrails (bloqueia app/título sensível).
+fn ensure_target(args: &Value, tool: &str) -> Result<HWND, String> {
+    let hwnd = find_window(args)?;
+    let guardrails = load_guardrails();
+    if let Some(reason) = guardrails_block_reason(hwnd, &guardrails) {
+        audit_guardrail(tool, hwnd, false, &reason);
+        return Err(format!("guardrails: {reason}"));
+    }
+    Ok(hwnd)
+}
+
+fn redact_capture(
+    pixels: &mut [u8],
+    width: i32,
+    height: i32,
+    origin_x: i32,
+    origin_y: i32,
+    regions: &[RECT],
+) {
+    for region in regions {
+        let x0 = (region.left - origin_x).max(0);
+        let y0 = (region.top - origin_y).max(0);
+        let x1 = (region.right - origin_x).min(width).max(0);
+        let y1 = (region.bottom - origin_y).min(height).max(0);
+        for y in y0..y1 {
+            let row = (y as usize) * (width as usize) * 4;
+            for x in x0..x1 {
+                let offset = row + (x as usize) * 4;
+                pixels[offset] = 0;
+                pixels[offset + 1] = 0;
+                pixels[offset + 2] = 0;
+                pixels[offset + 3] = 255;
+            }
+        }
+    }
 }
 
 unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> i32 {
@@ -873,7 +1171,7 @@ struct SavedCapture {
 
 /// Captura uma janela e grava o PNG (respeita `method` e `out` do args).
 fn save_capture(args: &Value) -> Result<SavedCapture, String> {
-    let hwnd = find_window(args)?;
+    let hwnd = ensure_target(args, "save_capture")?;
     let method = args.get("method").and_then(Value::as_str).unwrap_or("auto");
     let (png, width, height, dpi, used) = capture(hwnd, method)?;
     let file = match args.get("out").and_then(Value::as_str) {
@@ -1167,7 +1465,7 @@ fn run_script_action(
             Ok((json!({ "text": step_output_text(&content) }), None))
         }
         "get_text" => {
-            let hwnd = find_window(args)?;
+            let hwnd = ensure_target(args, "run_script_action")?;
             let text = window_message_text(hwnd).unwrap_or_else(|| window_title(hwnd));
             Ok((json!({ "text": text.clone() }), Some(json!(text))))
         }
@@ -1226,7 +1524,7 @@ fn run_script_action(
             Ok((json!({ "slept_ms": ms }), None))
         }
         "assert_text" => {
-            let hwnd = find_window(args)?;
+            let hwnd = ensure_target(args, "run_script_action")?;
             let text = window_message_text(hwnd).unwrap_or_else(|| window_title(hwnd));
             let contains = args.get("contains").and_then(Value::as_str);
             let equals = args.get("equals").and_then(Value::as_str);
@@ -1555,6 +1853,20 @@ fn capture(hwnd: HWND, method: &str) -> Result<(Vec<u8>, u32, u32, f64, &'static
             px[3] = 255;
         }
 
+        // Guardrails: pinta de preto as regiões configuradas (coordenadas de tela)
+        // antes de o PNG sair do processo.
+        let guardrails = load_guardrails();
+        if !guardrails.redact_regions.is_empty() {
+            redact_capture(
+                &mut pixels,
+                width,
+                height,
+                rect.left,
+                rect.top,
+                &guardrails.redact_regions,
+            );
+        }
+
         let mut png_bytes: Vec<u8> = Vec::new();
         {
             let mut encoder = png::Encoder::new(&mut png_bytes, width as u32, height as u32);
@@ -1609,7 +1921,7 @@ fn open_app(args: &Value) -> Result<Vec<Value>, String> {
 }
 
 fn window_state(args: &Value) -> Result<Vec<Value>, String> {
-    let hwnd = find_window(args)?;
+    let hwnd = ensure_target(args, "window_state")?;
     let action = args
         .get("action")
         .and_then(Value::as_str)
@@ -1652,7 +1964,7 @@ struct ControlInfo {
 }
 
 fn list_controls(args: &Value) -> Result<Vec<Value>, String> {
-    let hwnd = find_window(args)?;
+    let hwnd = ensure_target(args, "list_controls")?;
     dock_activity_if_connected("lendo controles");
     let controls = child_controls(hwnd);
     if controls.is_empty() {
@@ -1710,7 +2022,7 @@ unsafe extern "system" fn enum_child(hwnd: HWND, lparam: LPARAM) -> i32 {
 }
 
 fn click(args: &Value) -> Result<Vec<Value>, String> {
-    let hwnd = find_window(args)?;
+    let hwnd = ensure_target(args, "click")?;
     let x = args.get("x").and_then(Value::as_i64).unwrap_or(0) as i32;
     let y = args.get("y").and_then(Value::as_i64).unwrap_or(0) as i32;
     let (cx, cy) = match args.get("coords").and_then(Value::as_str) {
@@ -1744,7 +2056,7 @@ fn click(args: &Value) -> Result<Vec<Value>, String> {
 }
 
 fn type_text(args: &Value) -> Result<Vec<Value>, String> {
-    let hwnd = find_window(args)?;
+    let hwnd = ensure_target(args, "type_text")?;
     let text = args
         .get("text")
         .and_then(Value::as_str)
@@ -1767,7 +2079,7 @@ fn type_text(args: &Value) -> Result<Vec<Value>, String> {
 }
 
 fn send_key(args: &Value) -> Result<Vec<Value>, String> {
-    let hwnd = find_window(args)?;
+    let hwnd = ensure_target(args, "send_key")?;
     let key = args.get("key").ok_or("informe key")?;
     let vk: u32 = if let Some(code) = key.as_u64() {
         code as u32
@@ -1803,7 +2115,7 @@ fn send_key(args: &Value) -> Result<Vec<Value>, String> {
 }
 
 fn get_text(args: &Value) -> Result<Vec<Value>, String> {
-    let hwnd = find_window(args)?;
+    let hwnd = ensure_target(args, "get_text")?;
     let text = window_message_text(hwnd).unwrap_or_else(|| window_title(hwnd));
     Ok(vec![text_content(&format!(
         "0x{:X}: {text:?}",
@@ -1829,7 +2141,7 @@ fn window_message_text(hwnd: HWND) -> Option<String> {
 }
 
 fn wait_for(args: &Value) -> Result<Vec<Value>, String> {
-    let hwnd = find_window(args)?;
+    let hwnd = ensure_target(args, "wait_for")?;
     let timeout = args
         .get("timeout_ms")
         .and_then(Value::as_u64)
@@ -1902,7 +2214,7 @@ fn require_lease() -> Result<(), String> {
 }
 
 fn focus_lease(args: &Value) -> Result<Vec<Value>, String> {
-    let hwnd = find_window(args)?;
+    let hwnd = ensure_target(args, "focus_lease")?;
     let seconds = args
         .get("seconds")
         .and_then(Value::as_u64)
@@ -2030,7 +2342,7 @@ fn send_unicode(code: u16) {
 // ---------------------------------------------------------------------------
 
 fn set_text(args: &Value) -> Result<Vec<Value>, String> {
-    let hwnd = find_window(args)?;
+    let hwnd = ensure_target(args, "set_text")?;
     let text = args
         .get("text")
         .and_then(Value::as_str)
@@ -2050,7 +2362,7 @@ fn set_text(args: &Value) -> Result<Vec<Value>, String> {
 }
 
 fn control_click(args: &Value) -> Result<Vec<Value>, String> {
-    let hwnd = find_window(args)?;
+    let hwnd = ensure_target(args, "control_click")?;
     dock_activity_if_connected("acionando controle");
     let mut method = "BM_CLICK";
     let result = unsafe { SendMessageW(hwnd, BM_CLICK, 0, 0) };
@@ -2265,7 +2577,7 @@ fn run_powershell(script: &str) -> Result<String, String> {
 }
 
 fn uia_query(args: &Value) -> Result<Vec<Value>, String> {
-    let hwnd = find_window(args)?;
+    let hwnd = ensure_target(args, "uia_query")?;
     let max = args
         .get("max")
         .and_then(Value::as_u64)
@@ -2308,7 +2620,7 @@ $out | ConvertTo-Json -Compress
 }
 
 fn uia_invoke(args: &Value) -> Result<Vec<Value>, String> {
-    let hwnd = find_window(args)?;
+    let hwnd = ensure_target(args, "uia_invoke")?;
     let name = args
         .get("name")
         .and_then(Value::as_str)
