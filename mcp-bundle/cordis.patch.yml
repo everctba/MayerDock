@@ -7,5 +7,7 @@
         command: 'H:\TUDO\Codigo\Codigo\FluxTV\MayerDock\dist\MayerDock\mayerdock.exe'
         args:
           - '--mcp'
+        env:
+          MAYERDOCK_AUTOSTART_DOCK: '1'
         toolCallTimeoutMs: 120000
         failOnStartupError: false

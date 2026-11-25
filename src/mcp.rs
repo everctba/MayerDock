@@ -44,11 +44,11 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, EnumWindows, GetClassNameW, GetClientRect, GetDlgCtrlID, GetWindowLongW,
-    GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
-    IsWindowVisible, PostMessageW, SendMessageW, SetCursorPos, ShowWindow, BM_CLICK, GWL_EXSTYLE,
-    SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNOACTIVATE, WM_CHAR, WM_GETTEXT,
-    WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    EnumChildWindows, EnumWindows, FindWindowW, GetClassNameW, GetClientRect, GetDlgCtrlID,
+    GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsWindow, IsWindowVisible, PostMessageW, SendMessageW, SetCursorPos, ShowWindow, BM_CLICK,
+    GWL_EXSTYLE, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNOACTIVATE, WM_CHAR,
+    WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
     WM_MOUSEWHEEL, WM_SETTEXT, WS_EX_TOOLWINDOW,
 };
 
@@ -279,7 +279,140 @@ fn dock_bye() {
 
 /// Executa uma tool no dock (erro legível quando o dock não está aberto).
 fn dock_tool(tool: &str, args: Value) -> Result<Value, String> {
-    dock()?.call(tool, args)
+    match dock() {
+        Ok(dock) => dock.call(tool, args),
+        Err(first) => {
+            // Auto-start opt-in: só para tools que realmente precisam do dock.
+            if autostart_enabled() && dock_tool_autostartable(tool) && !dock_window_exists() {
+                start_dock(10_000)?;
+                return dock()?.call(tool, args);
+            }
+            Err(first)
+        }
+    }
+}
+
+/// O dock (janela/AppBar) está aberto? (independente do pipe estar ocupado)
+fn dock_window_exists() -> bool {
+    let class = crate::win::wide(crate::win::CLASS_DOCK);
+    unsafe { !FindWindowW(class.as_ptr(), std::ptr::null()).is_null() }
+}
+
+fn autostart_enabled() -> bool {
+    matches!(
+        std::env::var("MAYERDOCK_AUTOSTART_DOCK").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
+fn autostart_disabled() -> bool {
+    std::env::var("MAYERDOCK_AUTOSTART_DOCK").ok().as_deref() == Some("0")
+}
+
+fn dock_tool_autostartable(tool: &str) -> bool {
+    matches!(
+        tool,
+        "list_slots"
+            | "dock_pin"
+            | "dock_pin_at"
+            | "dock_unpin"
+            | "dock_release_all"
+            | "layout_info"
+            | "layout_apply"
+            | "workspace_save"
+            | "workspace_list"
+            | "workspace_restore"
+            | "workspace_draft"
+            | "workspace_apply_draft"
+            | "focus_lease"
+    )
+}
+
+fn dock_reset() {
+    unsafe {
+        DOCK = None;
+    }
+}
+
+fn dock_connect_retry(timeout_ms: u64) -> Result<(), String> {
+    let started = Instant::now();
+    let mut last = "dock não respondeu".to_string();
+    while (started.elapsed().as_millis() as u64) < timeout_ms {
+        match dock() {
+            Ok(_) => return Ok(()),
+            Err(err) => last = err,
+        }
+        std::thread::sleep(Duration::from_millis(120));
+    }
+    Err(last)
+}
+
+fn dock_exe_path() -> PathBuf {
+    if let Ok(path) = std::env::var("MAYERDOCK_DOCK_EXE") {
+        return PathBuf::from(path);
+    }
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mayerdock.exe"))
+}
+
+/// Inicia o dock sob demanda (sem `--mcp`) e espera a janela/pipe.
+fn start_dock(timeout_ms: u64) -> Result<u32, String> {
+    if dock_window_exists() {
+        dock_connect_retry(timeout_ms)?;
+        return Ok(0);
+    }
+    let exe = dock_exe_path();
+    let mut child = Command::new(&exe)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| format!("não iniciei o dock {:?}: {err}", exe))?;
+    let pid = child.id();
+    let started = Instant::now();
+    while !dock_window_exists() {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!("o dock iniciou e saiu ({status}); veja o log"));
+        }
+        if (started.elapsed().as_millis() as u64) >= timeout_ms {
+            return Err(format!("o dock não abriu em {timeout_ms} ms"));
+        }
+        std::thread::sleep(Duration::from_millis(120));
+    }
+    dock_reset();
+    dock_connect_retry(timeout_ms)?;
+    crate::win::log(&format!("mcp: dock iniciado sob demanda (pid {pid})"));
+    Ok(pid)
+}
+
+/// Tool `ensure_dock`: garante o dock aberto (ou retorna erro claro).
+fn ensure_dock(args: &Value) -> Result<Vec<Value>, String> {
+    let start = args.get("start").and_then(Value::as_bool).unwrap_or(true);
+    let timeout = args
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(10_000)
+        .clamp(1000, 30_000);
+    if dock_window_exists() {
+        match dock_connect_retry(timeout.min(3000)) {
+            Ok(()) => return Ok(vec![text_content("dock pronto (já estava aberto)")]),
+            Err(err) => {
+                return Err(format!(
+                    "dock está aberto, mas não conectei no pipe ({err}); \
+                     outro sidecar pode estar usando o pipe"
+                ))
+            }
+        }
+    }
+    if !start || autostart_disabled() {
+        return Err(
+            "dock não está aberto (ensure_dock start=false ou MAYERDOCK_AUTOSTART_DOCK=0)"
+                .to_string(),
+        );
+    }
+    let pid = start_dock(timeout)?;
+    Ok(vec![text_content(&format!(
+        "dock pronto (iniciado sob demanda, pid {pid})"
+    ))])
 }
 
 /// Manda uma ação para o overlay "screencast key" do dock (best-effort).
@@ -531,6 +664,19 @@ fn tools() -> Value {
             "description": "Geometria do dock: largura, splits (%), retângulos dos slots, \
                 estado de edição e pilhas de undo/redo. Requer o MayerDock aberto.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        },
+        {
+            "name": "ensure_dock",
+            "description": "Garante que o MayerDock esteja aberto; se não estiver, inicia o \
+                dock sob demanda (sem --mcp) e espera o pipe. start=false só verifica.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "start": { "type": "boolean" },
+                    "timeout_ms": { "type": "integer" }
+                },
+                "additionalProperties": false
+            }
         },
         {
             "name": "workspace_save",
@@ -912,6 +1058,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
             let layout = dock_tool("layout_info", json!({}))?;
             Ok(vec![text_content(&pretty(&layout))])
         }
+        "ensure_dock" => ensure_dock(args),
         "workspace_save" => {
             let name = args.get("name").and_then(Value::as_str).unwrap_or("");
             workspace_save(name)
@@ -1395,7 +1542,8 @@ fn tool_category(tool: &str) -> &'static str {
         | "workspace_list"
         | "workspace_restore"
         | "workspace_draft"
-        | "workspace_apply_draft" => "dock",
+        | "workspace_apply_draft"
+        | "ensure_dock" => "dock",
         "browser_launch" => "browser",
         "focus_lease" => "focus",
         _ => "unknown",

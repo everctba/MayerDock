@@ -299,6 +299,18 @@ slots/HUD/lease/workspace. Para remover, tire o pacote de `dependencies`/`bundle
 `.mcp.json`, a opção DSH e a política recomendada para o agente. O botão **⧉ Copiar**
 manda o texto inteiro para a área de transferência (vira “✓ Copiado”).
 
+**Abrir o dock sob demanda (auto-start):** com `MAYERDOCK_AUTOSTART_DOCK=1` (já ligado no
+`mcp-bundle` do DSH), a primeira tool que precisa do dock (`list_slots`, `dock_pin`,
+`workspace_*`, `layout_info`…) **inicia o dock sozinha** e espera o pipe. O agente também
+pode chamar a tool **`ensure_dock`**:
+- `ensure_dock {}` → garante aberto (inicia se preciso) e responde `dock pronto`;
+- `ensure_dock {"start": false}` → só verifica, com erro claro se estiver fechado;
+- `MAYERDOCK_AUTOSTART_DOCK=0` desliga o auto-start; `MAYERDOCK_DOCK_EXE` aponta outro
+  executável do dock.
+
+As tools de janela (`list_windows`, `capture_window`, `click`, `scroll`, UIA) continuam
+funcionando **sem** o dock aberto.
+
 Próxima fatia: input direcionado (UIA/CDP) e **focus lease** com modal de aprovação.
 Detalhes em [docs/AGENT-MCP.md](docs/AGENT-MCP.md).
 
