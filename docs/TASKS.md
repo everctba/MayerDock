@@ -248,6 +248,10 @@ Cada task tem descrição e critérios de aceite no beads (`bd show <id>`). Orde
 guardrails → pair testing → workspaces → borda de foco → divisórias → launcher → tema →
 badge → confetti.
 
+**Já implementado nesta lista:** `md-d33.3.8` Guardrails (blocklist/redaction/auditoria) e
+`md-d33.3.5` Borda de foco por sessão (azul sem sessão, cor por agente, âmbar no lease;
+validado por `scripts/focus_border_smoke.py`).
+
 ---
 
 ## T-005 — Auditoria visual: linha do tempo exportável (executar por último)

@@ -188,6 +188,24 @@ fn rgb(r: u8, g: u8, b: u8) -> u32 {
     (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
 }
 
+/// Cor estável por sessão de agente (hash FNV do nome na paleta).
+fn session_color(name: &str) -> u32 {
+    let palette = [
+        rgb(74, 112, 240), // azul
+        rgb(139, 92, 246), // violeta
+        rgb(20, 184, 166), // teal
+        rgb(236, 72, 153), // rosa
+        rgb(34, 197, 94),  // verde
+        rgb(234, 179, 8),  // amarelo
+    ];
+    let mut hash: u64 = 14_695_981_039_346_656_037;
+    for byte in name.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(1_099_511_628_211);
+    }
+    palette[(hash % palette.len() as u64) as usize]
+}
+
 fn make_font(size_logical: i32, weight: i32, scale: f64) -> HFONT {
     let face = win::wide("Segoe UI");
     let height = -((size_logical as f64 * scale).round() as i32).max(8);
@@ -1026,7 +1044,16 @@ fn paint(hwnd: HWND, s: &mut State) {
             right: px(s, 2).max(1),
             bottom: h,
         };
-        let eb = CreateSolidBrush(rgb(74, 112, 240));
+        // Borda de foco por sessão (md-d33.3.5): lease = âmbar, agente = cor
+        // estável pelo nome (hash), sem sessão = azul padrão.
+        let edge_color = if s.lease.is_some() {
+            rgb(245, 158, 11)
+        } else if let Some(agent) = &s.agent {
+            session_color(&agent.name)
+        } else {
+            rgb(74, 112, 240)
+        };
+        let eb = CreateSolidBrush(edge_color);
         FillRect(hdc, &edge, eb);
         DeleteObject(eb);
 

@@ -205,9 +205,10 @@ que harnesses compatíveis (Claude Code, Cursor, DSH) consomem. Integra com o do
 | `global_click` / `global_type` / `global_key` | Input **real** (`SendInput`) — só funciona dentro de um lease aprovado |
 
 Com o dock aberto, a sessão aparece no **HUD** (`● Claude · lendo slots`), o lease mostra a
-contagem (`· lease 12s`), os contadores aparecem (`· 2c 1s`) e o botão **■ Parar** encerra o
-sidecar (kill switch). Atalho global **Ctrl+Alt+Shift+K** também para o agente; a bandeja
-ganha “Parar agente” enquanto houver sessão. Capturas em
+contagem (`· lease 12s`), os contadores aparecem (`· 2c 1s`) e a **borda esquerda muda de
+cor**: azul = sem sessão, cor estável por agente e **âmbar durante o lease**. O botão
+**■ Parar** encerra o sidecar (kill switch). Atalho global **Ctrl+Alt+Shift+K** também para
+o agente; a bandeja ganha “Parar agente” enquanto houver sessão. Capturas em
 `%APPDATA%\MayerDock\agent\<pid>\cap-<timestamp>.png` (caminho, DPI e imagem base64).
 
 O modal de lease oferece **“Permitir sempre para este app”**: a regra fica em
