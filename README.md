@@ -134,6 +134,12 @@ Ações: `open_app`, `wait_window`, `find_control`, `click`, `type_text`, `send_
 [scripts/sample_script.json](scripts/sample_script.json). Exit codes: 0 passou,
 1 falhou um passo, 2 script/argumento inválido.
 
+Passos opcionais/comentados: use `"disabled": true` (e `_comment` para documentar) — o
+runner reporta `skipped: true` e não executa. O sample traz `dock_pin`/`dock_unpin`
+desativados: remova `disabled` para encaixar o Notepad no dock durante o teste.
+Teste dedicado do encaixe: `python scripts\dock_pin_smoke.py` (valida slot e restauração
+da janela por geometria, sem screenshot).
+
 **Modo CI:** `--ci` desliga texto humano, bloqueia ações que dependem de interação
 (`focus_lease`/`global_*`) e aplica timeout padrão de 120 s; `--report-junit` gera XML
 para o runner e `--report-json` o relatório completo como artefato. `--headless`/`--no-ui`

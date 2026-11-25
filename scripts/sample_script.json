@@ -8,6 +8,20 @@
     { "action": "set_text", "args": { "hwnd": "$edit", "text": "script runner ok" } },
     { "action": "assert_text", "args": { "hwnd": "$edit", "contains": "script runner ok" } },
     { "action": "capture", "args": { "hwnd": "$np", "out": "target/script-np.png" } },
+
+    {
+      "action": "dock_pin",
+      "args": { "hwnd": "$np" },
+      "disabled": true,
+      "_comment": "Opcional: remova \"disabled\" para encaixar o Notepad no dock. Requer o MayerDock aberto e um slot livre."
+    },
+    {
+      "action": "dock_unpin",
+      "args": { "hwnd": "$np" },
+      "disabled": true,
+      "_comment": "Par do passo anterior: devolve a janela à posição original."
+    },
+
     { "action": "window_state", "args": { "hwnd": "$np", "action": "close" } }
   ]
 }

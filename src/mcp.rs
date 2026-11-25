@@ -1947,6 +1947,22 @@ pub fn cli_script(
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        // Passo opcional/comentado: `"disabled": true` é reportado como skipped.
+        if step
+            .get("disabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            results.push(json!({
+                "index": index,
+                "action": action,
+                "ok": true,
+                "skipped": true,
+                "ms": 0,
+                "reason": step.get("_comment").and_then(Value::as_str).unwrap_or("disabled")
+            }));
+            continue;
+        }
         let raw_args = step.get("args").cloned().unwrap_or_else(|| json!({}));
         let step_args = vars_resolve(&raw_args, &vars);
         let step_started = Instant::now();
