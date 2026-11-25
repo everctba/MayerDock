@@ -175,9 +175,9 @@ estar pronta.
 - Testado no `.exe` de `dist\`: JSON válido, captura em arquivo, erro 1 para janela
   inexistente e erro 2 para argumento inválido.
 
-### Fase 2 — script runner (próxima)
+### Fase 2 — script runner — concluída (2026-11-24)
 
-`mayerdock.exe --script teste.json [--json] [--timeout 60]`:
+`mayerdock.exe --script teste.json [--json] [--timeout 60]`.
 
 ```json
 {
@@ -192,11 +192,15 @@ estar pronta.
 }
 ```
 
-- Ações: `open_app`, `wait_window`, `click`, `type_text`, `send_key`, `get_text`,
-  `set_text`, `control_click`, `uia_invoke`, `capture`, `assert_text`, `assert_window`,
-  `sleep`.
-- Variáveis (`as`/`$var`), resultado JSON com pass/fail por passo, duração e screenshots;
-  exit code 0/1. Sem MCP, sem agente.
+- Ações implementadas: `open_app`, `wait_window`, `find_control`, `click`, `type_text`,
+  `send_key`, `set_text`, `control_click`, `get_text`, `wait_for`, `uia_query`,
+  `uia_invoke`, `window_state`, `capture`, `assert_text`, `assert_window`, `list_slots`,
+  `dock_pin`, `dock_unpin`, `dock_release_all`, `sleep`.
+- Variáveis (`as`/`$var`), `continue_on_error`, timeout global/per-step, relatório JSON
+  com pass/fail por passo, duração e artefatos; exit code 0/1/2 (BOM UTF-8 aceito).
+- Validado: `scripts/sample_script.json` (Notepad: open → wait → find_control → set_text →
+  assert_text → capture → close) passou em ~218 ms; script com assert errado retorna
+  exit 1 e `aborted=true`; JSON inválido/arquivo ausente retorna exit 2.
 
 ### Fase 3 — integração CI
 

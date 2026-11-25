@@ -114,7 +114,20 @@ argumentos), sem abrir a interface. Saída `--json` é estável para scripts/est
 # captura de uma janela para arquivo
 .\dist\MayerDock\mayerdock.exe --capture --title Notepad --out target\cap.png --json
 .\dist\MayerDock\mayerdock.exe --capture --hwnd 0x1234 --out target\cap.png
+
+# script runner (passos declarativos, sem agente/MCP)
+.\dist\MayerDock\mayerdock.exe --script scripts\sample_script.json --json
 ```
+
+**Script runner** (`--script arquivo.json [--json] [--timeout ms]`): executa passos e
+retorna relatório JSON (`ok`, `steps[]` com `ms`/`error`, `duration_ms`, `aborted`).
+Ações: `open_app`, `wait_window`, `find_control`, `click`, `type_text`, `send_key`,
+`set_text`, `control_click`, `get_text`, `wait_for`, `uia_query`, `uia_invoke`,
+`window_state`, `capture`, `assert_text`, `assert_window`, `list_slots`, `dock_pin`,
+`dock_unpin`, `dock_release_all`, `sleep`. Variáveis com `"as": "np"` e uso `"$np"`;
+`continue_on_error` por passo. Exemplo em
+[scripts/sample_script.json](scripts/sample_script.json). Exit codes: 0 passou,
+1 falhou um passo, 2 script/argumento inválido.
 
 Códigos de saída: **0** = ok, **1** = erro de execução (janela não achada, captura
 falhou), **2** = uso inválido. `--silent`/`--quiet` implica saída JSON (sem texto humano).
@@ -124,6 +137,10 @@ Exemplo de uso em PowerShell/CI:
 $cap = .\dist\MayerDock\mayerdock.exe --capture --title "Notepad" --out artifacts\np.png --json |
        ConvertFrom-Json
 if (-not $cap.ok) { throw $cap.error }
+
+$run = .\dist\MayerDock\mayerdock.exe --script scripts\sample_script.json --json |
+       ConvertFrom-Json
+if (-not $run.ok) { throw "script falhou no passo $($run.steps | ? { -not $_.ok } | select -First 1)" }
 ```
 
 O `--status` mostra:

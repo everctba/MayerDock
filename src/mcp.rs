@@ -16,12 +16,13 @@
 
 #![allow(static_mut_refs)]
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use serde_json::{json, Value};
@@ -860,39 +861,71 @@ fn find_window(args: &Value) -> Result<HWND, String> {
 // Captura de janela (PrintWindow + fallback BitBlt) → PNG
 // ---------------------------------------------------------------------------
 
-fn capture_window(args: &Value) -> Result<Vec<Value>, String> {
+struct SavedCapture {
+    file: PathBuf,
+    png: Vec<u8>,
+    width: u32,
+    height: u32,
+    dpi: f64,
+    method: &'static str,
+    hwnd: HWND,
+}
+
+/// Captura uma janela e grava o PNG (respeita `method` e `out` do args).
+fn save_capture(args: &Value) -> Result<SavedCapture, String> {
     let hwnd = find_window(args)?;
     let method = args.get("method").and_then(Value::as_str).unwrap_or("auto");
-    let (png_bytes, width, height, dpi, used) = capture(hwnd, method)?;
-
-    let dir = capture_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("não criei {:?}: {e}", dir))?;
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let file = dir.join(format!("cap-{stamp}.png"));
-    std::fs::write(&file, &png_bytes).map_err(|e| format!("não escrevi {:?}: {e}", file))?;
-
-    let title = window_title(hwnd);
-    let text = format!(
-        "capturada: {title:?}\r\narquivo: {}\r\n{width}x{height} px dpi={:.0}%\r\nmétodo: {used}\r\nbytes: {}",
-        file.display(),
-        dpi * 100.0,
-        png_bytes.len()
-    );
-    let data = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+    let (png, width, height, dpi, used) = capture(hwnd, method)?;
+    let file = match args.get("out").and_then(Value::as_str) {
+        Some(path) => PathBuf::from(path),
+        None => capture_dir().join(format!(
+            "cap-{}.png",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or(0)
+        )),
+    };
+    if let Some(parent) = file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&file, &png).map_err(|err| format!("não escrevi {:?}: {err}", file))?;
     unsafe {
         CAPTURES = CAPTURES.saturating_add(1);
     }
     dock_activity_if_connected("capturando");
     crate::win::log(&format!(
-        "mcp: captura hwnd=0x{:X} {}x{} {} bytes",
+        "mcp: captura hwnd=0x{:X} {}x{} {} bytes ({used}) -> {}",
         hwnd as usize,
         width,
         height,
-        png_bytes.len()
+        png.len(),
+        file.display()
     ));
+    Ok(SavedCapture {
+        file,
+        png,
+        width,
+        height,
+        dpi,
+        method: used,
+        hwnd,
+    })
+}
+
+fn capture_window(args: &Value) -> Result<Vec<Value>, String> {
+    let saved = save_capture(args)?;
+    let title = window_title(saved.hwnd);
+    let text = format!(
+        "capturada: {title:?}\r\narquivo: {}\r\n{}x{} px dpi={:.0}%\r\nmétodo: {}\r\nbytes: {}",
+        saved.file.display(),
+        saved.width,
+        saved.height,
+        saved.dpi * 100.0,
+        saved.method,
+        saved.png.len()
+    );
+    let data = base64::engine::general_purpose::STANDARD.encode(&saved.png);
     Ok(vec![
         text_content(&text),
         json!({ "type": "image", "mimeType": "image/png", "data": data }),
@@ -924,6 +957,16 @@ fn cli_error(message: &str, json_output: bool) -> i32 {
         crate::win::console_print(&format!("erro: {message}\r\n"));
     }
     1
+}
+
+/// Erro de uso/script inválido → exit code 2 (como argumentos inválidos).
+fn cli_usage_error(message: &str, json_output: bool) -> i32 {
+    if json_output {
+        print_json(&json!({ "ok": false, "error": message }));
+    } else {
+        crate::win::console_print(&format!("erro: {message}\r\n"));
+    }
+    2
 }
 
 /// `--list-windows [--json]`: inventário de janelas para scripts/CI.
@@ -980,59 +1023,357 @@ pub fn cli_capture(
     out: Option<String>,
     json_output: bool,
 ) -> i32 {
-    let args = match (hwnd, title.as_ref()) {
+    let mut args = match (hwnd, title.as_ref()) {
         (Some(hwnd), _) => json!({ "hwnd": hwnd }),
         (None, Some(title)) => json!({ "title": title }),
         (None, None) => return cli_error("informe --title ou --hwnd", json_output),
     };
-    let target = match find_window(&args) {
-        Ok(target) => target,
+    if let Some(out) = &out {
+        if let Some(object) = args.as_object_mut() {
+            object.insert("out".to_string(), json!(out));
+        }
+    }
+    let saved = match save_capture(&args) {
+        Ok(saved) => saved,
         Err(err) => return cli_error(&err, json_output),
     };
-    let (png, width, height, dpi, method) = match capture(target, "auto") {
-        Ok(result) => result,
-        Err(err) => return cli_error(&err, json_output),
-    };
-    let path = match out {
-        Some(path) => PathBuf::from(path),
-        None => capture_dir().join(format!(
-            "cli-{}.png",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_millis())
-                .unwrap_or(0)
-        )),
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Err(err) = std::fs::write(&path, &png) {
-        return cli_error(&format!("não escrevi {:?}: {err}", path), json_output);
-    }
     if json_output {
         print_json(&json!({
             "ok": true,
-            "file": path.display().to_string(),
-            "hwnd": target as usize,
-            "width": width,
-            "height": height,
-            "dpi_scale": dpi,
-            "method": method,
-            "bytes": png.len()
+            "file": saved.file.display().to_string(),
+            "hwnd": saved.hwnd as usize,
+            "width": saved.width,
+            "height": saved.height,
+            "dpi_scale": saved.dpi,
+            "method": saved.method,
+            "bytes": saved.png.len()
         }));
     } else {
         crate::win::console_print(&format!(
             "capturada: 0x{:X} {}x{} dpi={:.0}% método={}\r\narquivo: {}\r\nbytes: {}\r\n",
-            target as usize,
-            width,
-            height,
-            dpi * 100.0,
-            method,
-            path.display(),
-            png.len()
+            saved.hwnd as usize,
+            saved.width,
+            saved.height,
+            saved.dpi * 100.0,
+            saved.method,
+            saved.file.display(),
+            saved.png.len()
         ));
     }
     0
+}
+
+// ---------------------------------------------------------------------------
+// Script runner (Fase 2 do modo console): --script arquivo.json
+// ---------------------------------------------------------------------------
+
+fn step_output_text(values: &[Value]) -> Option<String> {
+    values.iter().find_map(|value| {
+        value
+            .get("text")
+            .and_then(Value::as_str)
+            .map(|text| text.to_string())
+    })
+}
+
+/// Substitui strings `"$var"` pelos valores capturados nos passos anteriores.
+fn vars_resolve(args: &Value, vars: &HashMap<String, Value>) -> Value {
+    match args {
+        Value::String(text) => match text.strip_prefix('$') {
+            Some(name) => vars.get(name).cloned().unwrap_or_else(|| args.clone()),
+            None => args.clone(),
+        },
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|item| vars_resolve(item, vars)).collect())
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), vars_resolve(value, vars)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn script_sleep(ms: u64) {
+    std::thread::sleep(Duration::from_millis(ms.min(60_000)));
+}
+
+fn script_wait_window(args: &Value) -> Result<(Value, Option<Value>), String> {
+    let timeout = args
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(5000)
+        .clamp(100, 60_000);
+    let started = Instant::now();
+    loop {
+        if let Ok(hwnd) = find_window(args) {
+            let hwnd_number = hwnd as usize;
+            return Ok((json!({ "hwnd": hwnd_number }), Some(json!(hwnd_number))));
+        }
+        if started.elapsed().as_millis() as u64 >= timeout {
+            return Err(format!("timeout de {timeout} ms esperando janela"));
+        }
+        script_sleep(100);
+    }
+}
+
+/// Executa uma ação do script; devolve (saída para o relatório, valor para `as`).
+fn run_script_action(
+    action: &str,
+    args: &Value,
+    _vars: &mut HashMap<String, Value>,
+) -> Result<(Value, Option<Value>), String> {
+    match action {
+        "open_app" => {
+            let content = open_app(args)?;
+            Ok((json!({ "text": step_output_text(&content) }), None))
+        }
+        "wait_window" => script_wait_window(args),
+        "assert_window" => {
+            let result = script_wait_window(args)?;
+            Ok((json!({ "ok": true, "hwnd": result.0["hwnd"] }), None))
+        }
+        "capture" => {
+            let saved = save_capture(args)?;
+            Ok((
+                json!({
+                    "file": saved.file.display().to_string(),
+                    "width": saved.width,
+                    "height": saved.height,
+                    "method": saved.method
+                }),
+                Some(json!(saved.file.display().to_string())),
+            ))
+        }
+        "click" => {
+            let content = click(args)?;
+            Ok((json!({ "text": step_output_text(&content) }), None))
+        }
+        "type_text" => {
+            let content = type_text(args)?;
+            Ok((json!({ "text": step_output_text(&content) }), None))
+        }
+        "send_key" => {
+            let content = send_key(args)?;
+            Ok((json!({ "text": step_output_text(&content) }), None))
+        }
+        "set_text" => {
+            let content = set_text(args)?;
+            Ok((json!({ "text": step_output_text(&content) }), None))
+        }
+        "control_click" => {
+            let content = control_click(args)?;
+            Ok((json!({ "text": step_output_text(&content) }), None))
+        }
+        "get_text" => {
+            let hwnd = find_window(args)?;
+            let text = window_message_text(hwnd).unwrap_or_else(|| window_title(hwnd));
+            Ok((json!({ "text": text.clone() }), Some(json!(text))))
+        }
+        "find_control" => {
+            let parent = find_window(args)?;
+            let class_filter = args
+                .get("class")
+                .and_then(Value::as_str)
+                .map(|value| value.to_lowercase());
+            let text_filter = args
+                .get("text_contains")
+                .and_then(Value::as_str)
+                .map(|value| value.to_lowercase());
+            for control in child_controls(parent) {
+                if let Some(filter) = &class_filter {
+                    if !control.class.to_lowercase().contains(filter) {
+                        continue;
+                    }
+                }
+                if let Some(filter) = &text_filter {
+                    if !control.text.to_lowercase().contains(filter) {
+                        continue;
+                    }
+                }
+                let hwnd = control.hwnd as usize;
+                return Ok((
+                    json!({ "hwnd": hwnd, "class": control.class, "text": control.text }),
+                    Some(json!(hwnd)),
+                ));
+            }
+            Err("controle não encontrado (class/text_contains)".to_string())
+        }
+        "wait_for" => {
+            let content = wait_for(args)?;
+            Ok((json!({ "text": step_output_text(&content) }), None))
+        }
+        "uia_query" => {
+            let content = uia_query(args)?;
+            Ok((json!({ "text": step_output_text(&content) }), None))
+        }
+        "uia_invoke" => {
+            let content = uia_invoke(args)?;
+            Ok((json!({ "text": step_output_text(&content) }), None))
+        }
+        "window_state" => {
+            let content = window_state(args)?;
+            Ok((json!({ "text": step_output_text(&content) }), None))
+        }
+        "list_slots" | "dock_pin" | "dock_unpin" | "dock_release_all" => {
+            let result = dock_tool(action, args.clone())?;
+            Ok((result.clone(), None))
+        }
+        "sleep" => {
+            let ms = args.get("ms").and_then(Value::as_u64).unwrap_or(500);
+            script_sleep(ms);
+            Ok((json!({ "slept_ms": ms }), None))
+        }
+        "assert_text" => {
+            let hwnd = find_window(args)?;
+            let text = window_message_text(hwnd).unwrap_or_else(|| window_title(hwnd));
+            let contains = args.get("contains").and_then(Value::as_str);
+            let equals = args.get("equals").and_then(Value::as_str);
+            let ok = if let Some(needle) = contains {
+                text.contains(needle)
+            } else if let Some(expected) = equals {
+                text == expected
+            } else {
+                return Err("assert_text exige contains ou equals".to_string());
+            };
+            if !ok {
+                return Err(format!(
+                    "assert_text falhou: esperado {:?}/{:?}, obtido {text:?}",
+                    contains, equals
+                ));
+            }
+            Ok((json!({ "text": text }), None))
+        }
+        other => Err(format!("ação desconhecida: {other}")),
+    }
+}
+
+/// `--script arquivo.json [--json] [--timeout ms]`: roda passos declarativos.
+pub fn cli_script(path: &str, json_output: bool, timeout_ms: Option<u64>) -> i32 {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) => return cli_usage_error(&format!("não li {path:?}: {err}"), json_output),
+    };
+    // Aceita arquivos gerados por editores Windows que gravam BOM UTF-8.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    let script: Value = match serde_json::from_str(text) {
+        Ok(value) => value,
+        Err(err) => {
+            return cli_usage_error(&format!("JSON inválido em {path:?}: {err}"), json_output)
+        }
+    };
+    let Some(steps) = script.get("steps").and_then(Value::as_array) else {
+        return cli_usage_error("script sem campo \"steps\" (array)", json_output);
+    };
+    let name = script
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("script");
+    let global_timeout = timeout_ms.or(script.get("timeout_ms").and_then(Value::as_u64));
+    let started = Instant::now();
+    let mut vars: HashMap<String, Value> = HashMap::new();
+    let mut results: Vec<Value> = Vec::new();
+    let mut ok = true;
+    let mut aborted = false;
+
+    for (index, step) in steps.iter().enumerate() {
+        if let Some(limit) = global_timeout {
+            if started.elapsed().as_millis() as u64 > limit {
+                results.push(json!({
+                    "index": index,
+                    "ok": false,
+                    "error": format!("timeout global de {limit} ms")
+                }));
+                ok = false;
+                aborted = true;
+                break;
+            }
+        }
+        let action = step
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let raw_args = step.get("args").cloned().unwrap_or_else(|| json!({}));
+        let step_args = vars_resolve(&raw_args, &vars);
+        let step_started = Instant::now();
+        let result = run_script_action(&action, &step_args, &mut vars);
+        let elapsed = step_started.elapsed().as_millis();
+        match result {
+            Ok((output, variable)) => {
+                if let (Some(value), Some(variable_name)) =
+                    (variable, step.get("as").and_then(Value::as_str))
+                {
+                    vars.insert(variable_name.to_string(), value);
+                }
+                results.push(json!({
+                    "index": index,
+                    "action": action,
+                    "ok": true,
+                    "ms": elapsed,
+                    "output": output
+                }));
+            }
+            Err(err) => {
+                results.push(json!({
+                    "index": index,
+                    "action": action,
+                    "ok": false,
+                    "ms": elapsed,
+                    "error": err
+                }));
+                let continue_on_error = step
+                    .get("continue_on_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if !continue_on_error {
+                    ok = false;
+                    aborted = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    let report = json!({
+        "ok": ok,
+        "name": name,
+        "steps": results,
+        "duration_ms": started.elapsed().as_millis(),
+        "aborted": aborted
+    });
+    if json_output {
+        print_json(&report);
+    } else {
+        let mut out = String::new();
+        out.push_str(&format!("script: {name}\r\n"));
+        for step in report["steps"].as_array().into_iter().flatten() {
+            let index = step.get("index").and_then(Value::as_u64).unwrap_or(0);
+            let action = step.get("action").and_then(Value::as_str).unwrap_or("-");
+            let step_ok = step.get("ok").and_then(Value::as_bool).unwrap_or(false);
+            let ms = step.get("ms").and_then(Value::as_u64).unwrap_or(0);
+            if step_ok {
+                out.push_str(&format!("  [{index}] {action}: ok ({ms} ms)\r\n"));
+            } else {
+                let error = step.get("error").and_then(Value::as_str).unwrap_or("");
+                out.push_str(&format!(
+                    "  [{index}] {action}: FALHOU ({ms} ms): {error}\r\n"
+                ));
+            }
+        }
+        out.push_str(&format!(
+            "resultado: {} em {} ms\r\n",
+            if ok { "PASSOU" } else { "FALHOU" },
+            started.elapsed().as_millis()
+        ));
+        crate::win::console_print(&out);
+    }
+    if ok {
+        0
+    } else {
+        1
+    }
 }
 
 fn capture(hwnd: HWND, method: &str) -> Result<(Vec<u8>, u32, u32, f64, &'static str), String> {

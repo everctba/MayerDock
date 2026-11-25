@@ -17,6 +17,7 @@ Console / CI (não abre o dock):\r\n\
   mayerdock.exe --status [--json]    versão, modo, config e caminhos\r\n\
   mayerdock.exe --list-windows [--json]\r\n\
   mayerdock.exe --capture (--title T | --hwnd N) [--out ARQ] [--json]\r\n\
+  mayerdock.exe --script ARQ.json [--json] [--timeout ms]\r\n\
   mayerdock.exe --version | --help\r\n\
 \r\n\
 Flags: --json (saída legível por máquina), --silent/--quiet (só JSON/erros).\r\n\
@@ -44,6 +45,8 @@ fn main() {
     let mut title: Option<String> = None;
     let mut hwnd: Option<i64> = None;
     let mut out: Option<String> = None;
+    let mut script: Option<String> = None;
+    let mut timeout: Option<u64> = None;
 
     let mut index = 0;
     while index < args.len() {
@@ -78,6 +81,24 @@ fn main() {
                 };
                 out = Some(value.clone());
             }
+            "--script" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    usage_error("--script exige um arquivo .json");
+                };
+                script = Some(value.clone());
+            }
+            "--timeout" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    usage_error("--timeout exige milissegundos");
+                };
+                timeout = Some(
+                    value
+                        .parse::<u64>()
+                        .unwrap_or_else(|_| usage_error("--timeout inválido")),
+                );
+            }
             "--version" | "-V" => {
                 win::console_print(&format!("MayerDock {}\r\n", env!("CARGO_PKG_VERSION")));
                 return;
@@ -103,6 +124,9 @@ fn main() {
     }
     if capture {
         std::process::exit(mcp::cli_capture(hwnd, title, out, machine));
+    }
+    if let Some(path) = script {
+        std::process::exit(mcp::cli_script(&path, machine, timeout));
     }
 
     // Nenhum comando de console: inicia o dock normalmente.

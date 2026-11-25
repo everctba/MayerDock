@@ -1,0 +1,13 @@
+{
+  "name": "notepad-smoke",
+  "timeout_ms": 30000,
+  "steps": [
+    { "action": "open_app", "args": { "path": "notepad.exe" } },
+    { "action": "wait_window", "args": { "title": "Notepad", "timeout_ms": 8000 }, "as": "np" },
+    { "action": "find_control", "args": { "hwnd": "$np", "class": "Edit" }, "as": "edit" },
+    { "action": "set_text", "args": { "hwnd": "$edit", "text": "script runner ok" } },
+    { "action": "assert_text", "args": { "hwnd": "$edit", "contains": "script runner ok" } },
+    { "action": "capture", "args": { "hwnd": "$np", "out": "target/script-np.png" } },
+    { "action": "window_state", "args": { "hwnd": "$np", "action": "close" } }
+  ]
+}
