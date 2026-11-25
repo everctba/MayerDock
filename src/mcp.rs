@@ -696,7 +696,12 @@ fn tools() -> Value {
                 "properties": {
                     "url": { "type": "string" },
                     "headless": { "type": "boolean" },
-                    "cdp_port": { "type": "integer" }
+                    "cdp_port": { "type": "integer" },
+                    "extra_flags": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Flags extras do Chromium (ex.: --enable-unsafe-webgpu)"
+                    }
                 },
                 "additionalProperties": false
             }
@@ -2741,6 +2746,16 @@ fn browser_launch(args: &Value) -> Result<Vec<Value>, String> {
     } else {
         // Janela nasce fora da tela; captura via WGC continua com GPU real.
         flags.push("--window-position=-2400,-2400".to_string());
+    }
+    // Flags extras (ex.: --enable-unsafe-webgpu) para experimentos/spikes.
+    if let Some(extra) = args.get("extra_flags").and_then(Value::as_array) {
+        for item in extra {
+            if let Some(flag) = item.as_str() {
+                if flag.starts_with("--") {
+                    flags.push(flag.to_string());
+                }
+            }
+        }
     }
     flags.push(url.clone());
 

@@ -240,6 +240,12 @@ Config de exemplo:
 Próxima fatia: input direcionado (UIA/CDP) e **focus lease** com modal de aprovação.
 Detalhes em [docs/AGENT-MCP.md](docs/AGENT-MCP.md).
 
+**Browser/throttle (spike `md-9va`):** medido via CDP — headed offscreen mantém rAF
+~197/2,1 s e WebGL2 com GPU real; **minimizado zera o rAF** (manter offscreen visível,
+nunca minimizado); headless `new` usou GPU real neste ambiente; **WebGPU indisponível**
+mesmo com `--enable-unsafe-webgpu` (o `browser_launch` aceita `extra_flags`). Tabela
+completa em [docs/SPIKE-CHROMIUM.md](docs/SPIKE-CHROMIUM.md).
+
 ## Guardrails (v1.5)
 
 O Agent Workspace tem uma camada de proteção configurável em
@@ -434,6 +440,7 @@ MayerDock\
 ├─ docs\MSIX.md     # levantamento de requisitos MSIX/Store
 ├─ docs\AGENT-MCP.md# produto: workspace de agentes de IA (v1.5)
 ├─ docs\COMPAT.md   # matriz de compatibilidade de captura/UIA (spike md-tkr)
+├─ docs\SPIKE-CHROMIUM.md # throttle/oclusão + WebGPU/WebGL2/rAF (spike md-9va)
 ├─ scripts\         # fuzz_smoke.py e compat_matrix.py (testes/medições)
 └─ src\
    ├─ main.rs       # entrada
