@@ -244,8 +244,33 @@ Config de exemplo:
 }
 ```
 
-**No DSH (DeepSeek Harness)** o MCP é um patch de perfil (não `.mcp.json`). Adicione em
-`%USERPROFILE%\.dsh\profiles\<perfil>\cordis.patch.yml`:
+**No DSH (DeepSeek Harness)** o MCP é um **bundle local** de perfil (não `.mcp.json`).
+Este repositório traz o bundle em [`mcp-bundle/`](mcp-bundle/) (`@local/mayerdock-mcp`,
+com `cordis.patch.yml`, locale e ícone). No perfil
+`%USERPROFILE%\.dsh\profiles\<perfil>\package.json`:
+
+```json
+{
+  "dependencies": {
+    "@local/mayerdock-mcp": "link:H:/TUDO/Codigo/Codigo/FluxTV/MayerDock/mcp-bundle"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@local/mayerdock-mcp"
+      ]
+    }
+  }
+}
+```
+
+Depois `pnpm install --offline` no perfil e **abra uma sessão nova** (ou reinicie o DSH).
+As tools aparecem prefixadas (`mcp__mayerdock__*`); o dock precisa estar aberto para
+slots/HUD/lease/workspace. Para remover, tire o pacote de `dependencies`/`bundles` e rode
+`pnpm install` de novo.
+
+<details>
+<summary>Alternativa: patch inline em <code>cordis.patch.yml</code></summary>
 
 ```yaml
 - insert:
@@ -261,9 +286,7 @@ Config de exemplo:
         failOnStartupError: false
 ```
 
-Depois **abra uma sessão nova** (ou reinicie o DSH): o cliente MCP sobe o sidecar e as
-tools aparecem prefixadas (`mcp__mayerdock__*`). O dock precisa estar aberto para
-slots/HUD/lease/workspace.
+</details>
 
 Próxima fatia: input direcionado (UIA/CDP) e **focus lease** com modal de aprovação.
 Detalhes em [docs/AGENT-MCP.md](docs/AGENT-MCP.md).

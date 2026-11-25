@@ -1,0 +1,11 @@
+- insert:
+    - id: mayerdock-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: mayerdock
+        transport: stdio
+        command: 'H:\TUDO\Codigo\Codigo\FluxTV\MayerDock\dist\MayerDock\mayerdock.exe'
+        args:
+          - '--mcp'
+        toolCallTimeoutMs: 120000
+        failOnStartupError: false

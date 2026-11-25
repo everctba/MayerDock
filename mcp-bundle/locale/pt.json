@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Conexão MayerDock MCP",
+    "description": "Conecta o agent workspace do MayerDock via stdio: inventário/captura de janelas, input direcionado, UIA, slots do dock, workspaces e HUD, com guardrails e escopos."
+  }
+}
