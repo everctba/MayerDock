@@ -128,6 +128,13 @@ struct OverlayPill {
     until: std::time::Instant,
 }
 
+/// App esperando um slot livre (fila mostrada no rodapé do dock).
+#[derive(Clone)]
+struct PendingApp {
+    hwnd: HWND,
+    title: String,
+}
+
 /// Pedido do pipe entregue à thread da UI via `SendMessage`.
 struct AgentMsg {
     req: Value,
@@ -229,6 +236,8 @@ struct State {
     overlay_hwnd: HWND,
     overlay_events: Vec<OverlayEvent>,
     overlay_pill: Option<OverlayPill>,
+    /// Fila de apps aguardando slot livre (máx. slots = 3).
+    pending: Vec<PendingApp>,
     slot_count: usize,
     slots: Vec<Option<Slot>>,
     picking: Vec<HWND>,
@@ -341,6 +350,7 @@ impl State {
             overlay_hwnd: ptr::null_mut(),
             overlay_events: Vec::new(),
             overlay_pill: None,
+            pending: Vec::new(),
             slot_count,
             slots: vec![None; slot_count],
             picking: Vec::new(),
@@ -720,11 +730,13 @@ fn content_rect(s: &State) -> RECT {
     let r = s.abd.rc;
     let pad = px(s, PAD);
     let header = px(s, HEADER_H);
+    // Fila visível no rodapé reserva uma faixa fina.
+    let queue = if s.pending.is_empty() { 0 } else { px(s, 26) };
     RECT {
         left: r.left + pad,
         top: r.top + header,
         right: (r.right - pad).max(r.left + pad + px(s, 80)),
-        bottom: (r.bottom - pad).max(r.top + header + px(s, 80)),
+        bottom: (r.bottom - pad - queue).max(r.top + header + px(s, 80)),
     }
 }
 
@@ -1054,6 +1066,101 @@ fn ensure_slot_fits(s: &mut State) {
     }
 }
 
+fn free_slot_index(s: &State) -> Option<usize> {
+    s.slots.iter().position(|slot| slot.is_none())
+}
+
+/// Encaixa se houver slot livre; senão esconde e põe na fila do rodapé.
+fn enqueue_or_pin(s: &mut State, hwnd: HWND) -> Value {
+    if let Some(index) = free_slot_index(s) {
+        if pin_window(s, hwnd, Some(index)) {
+            return json!({ "pinned": true, "slot": index });
+        }
+    }
+    unsafe {
+        ShowWindow(hwnd, SW_HIDE);
+    }
+    let title = window_title(hwnd)
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| {
+            let label = process_label(hwnd);
+            if label.is_empty() {
+                "janela".to_string()
+            } else {
+                label
+            }
+        });
+    s.pending.push(PendingApp { hwnd, title });
+    sync_slot(s, true);
+    unsafe {
+        InvalidateRect(s.hwnd, ptr::null(), 0);
+    }
+    win::log(&format!(
+        "fila: janela 0x{:X} aguardando slot (posição {})",
+        hwnd as usize,
+        s.pending.len()
+    ));
+    json!({
+        "queued": true,
+        "position": s.pending.len(),
+        "pending": s.pending.len(),
+        "slot_count": s.slot_count
+    })
+}
+
+/// Promove o próximo da fila para cada slot que vagar.
+fn promote_pending(s: &mut State) {
+    let mut changed = false;
+    loop {
+        let Some(index) = free_slot_index(s) else {
+            break;
+        };
+        let Some(pending) = s.pending.first().cloned() else {
+            break;
+        };
+        s.pending.remove(0);
+        if unsafe { IsWindow(pending.hwnd) } == 0 {
+            changed = true;
+            continue;
+        }
+        if pin_window(s, pending.hwnd, Some(index)) {
+            unsafe {
+                ShowWindow(pending.hwnd, SW_SHOWNOACTIVATE);
+            }
+            win::log(&format!(
+                "fila: encaixando {:?} no slot {index}",
+                pending.title
+            ));
+            changed = true;
+        } else {
+            s.pending.insert(0, pending);
+            break;
+        }
+    }
+    if changed || !s.pending.is_empty() {
+        sync_slot(s, true);
+        unsafe {
+            InvalidateRect(s.hwnd, ptr::null(), 0);
+        }
+    }
+}
+
+/// Esvazia a fila e devolve as janelas ao desktop (usado ao liberar tudo).
+fn clear_pending(s: &mut State) {
+    let pending = std::mem::take(&mut s.pending);
+    for app in pending {
+        if unsafe { IsWindow(app.hwnd) } != 0 {
+            unsafe {
+                ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);
+            }
+        }
+    }
+    sync_slot(s, true);
+    unsafe {
+        InvalidateRect(s.hwnd, ptr::null(), 0);
+    }
+}
+
 fn release_slot(s: &mut State, index: usize) {
     if index >= s.slot_count {
         return;
@@ -1096,9 +1203,11 @@ fn release_slot(s: &mut State, index: usize) {
         InvalidateRect(s.hwnd, ptr::null(), 0);
     }
     win::log(&format!("divisão {index} liberada"));
+    promote_pending(s);
 }
 
 fn release_all(s: &mut State) {
+    clear_pending(s);
     for index in 0..s.slot_count {
         release_slot(s, index);
     }
@@ -1514,6 +1623,34 @@ fn paint(hwnd: HWND, s: &mut State) {
             if std::time::Instant::now() < until {
                 paint_confetti(hdc, s, w, header_h);
             }
+        }
+
+        // Fila de espera no rodapé: "▶ Próximo: <título> (+N)".
+        if !s.pending.is_empty() {
+            let bar_h = px(s, 26);
+            let bar = RECT {
+                left: px(s, 8),
+                top: h - bar_h - px(s, 4),
+                right: w - px(s, 8),
+                bottom: h - px(s, 4),
+            };
+            let bar_bg = CreateSolidBrush(header_color);
+            FillRect(hdc, &bar, bar_bg);
+            DeleteObject(bar_bg);
+            let mut label = format!("▶ Próximo: {}", s.pending[0].title);
+            if s.pending.len() > 1 {
+                label.push_str(&format!(" (+{} na fila)", s.pending.len() - 1));
+            }
+            let mut text_rect = bar;
+            text_rect.left += px(s, 8);
+            draw_text(
+                hdc,
+                s.font_hint,
+                title_color,
+                &label,
+                &mut text_rect,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+            );
         }
 
         EndPaint(hwnd, &ps);
@@ -2435,6 +2572,7 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
             "split0": s.split0,
             "split1": s.split1,
             "docked": s.slots.iter().flatten().count(),
+            "pending": s.pending.len(),
             "paused": s.agent_paused,
             "agent": s.agent.as_ref().map(|agent| json!({
                 "name": agent.name,
@@ -2470,6 +2608,7 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                     "bottom": c.bottom
                 },
                 "slot_rects": slot_rects,
+                "pending": s.pending.iter().map(|app| app.title.clone()).collect::<Vec<String>>(),
                 "undo": s.undo_stack.len(),
                 "redo": s.redo_stack.len(),
                 "editing": s.edit_pre.is_some(),
@@ -2570,6 +2709,13 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                     .iter()
                     .position(|slot| slot.as_ref().map(|slot| slot.hwnd) == Some(hwnd));
                 ok(json!({ "pinned": pinned, "slot": placed }))
+            }
+            None => err("informe args.hwnd"),
+        },
+        "dock_pin_or_queue" => match req.pointer("/args/hwnd").and_then(Value::as_i64) {
+            Some(raw) => {
+                let hwnd = raw as usize as HWND;
+                ok(enqueue_or_pin(s, hwnd))
             }
             None => err("informe args.hwnd"),
         },
@@ -3662,6 +3808,9 @@ unsafe extern "system" fn dock_proc(
             expire_lease(s);
             update_visibility(s);
             sync_slot(s, false);
+            if !s.pending.is_empty() {
+                promote_pending(s);
+            }
             0
         }
         WM_LBUTTONDOWN => {

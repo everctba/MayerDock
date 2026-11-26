@@ -344,25 +344,6 @@ fn autopin_enabled() -> bool {
     std::env::var("MAYERDOCK_AUTOPIN").ok().as_deref() != Some("0")
 }
 
-fn dock_has_free_slot() -> bool {
-    for attempt in 0..6 {
-        if attempt > 0 {
-            std::thread::sleep(Duration::from_millis(180));
-        }
-        if let Ok(value) = dock_tool("list_slots", json!({})) {
-            return value
-                .as_array()
-                .map(|items| {
-                    items
-                        .iter()
-                        .any(|slot| slot.get("occupied").and_then(Value::as_bool) == Some(false))
-                })
-                .unwrap_or(false);
-        }
-    }
-    false
-}
-
 fn autostart_enabled() -> bool {
     matches!(
         std::env::var("MAYERDOCK_AUTOSTART_DOCK").ok().as_deref(),
@@ -2813,11 +2794,9 @@ fn open_app_impl(args: &Value, default_pin: bool) -> Result<Vec<Value>, String> 
         .and_then(Value::as_u64)
         .map(|value| value as usize);
     let pin_arg = args.get("pin").and_then(Value::as_bool);
-    // Sem pin explícito: se o dock está aberto e tem slot livre, abre já dentro.
-    let auto_pin = pin_arg.is_none()
-        && autopin_enabled()
-        && dock_window_exists()
-        && (slot.is_some() || dock_has_free_slot());
+    // Sem pin explícito: com dock aberto, abre já dentro (ou na fila se lotado).
+    let auto_pin =
+        pin_arg.is_none() && (slot.is_some() || (autopin_enabled() && dock_window_exists()));
     let pin = pin_arg.unwrap_or(default_pin || auto_pin);
     let timeout = args
         .get("timeout_ms")
@@ -2892,9 +2871,19 @@ fn open_app_impl(args: &Value, default_pin: bool) -> Result<Vec<Value>, String> 
     unsafe {
         ShowWindow(hwnd, SW_HIDE);
     }
-    let pinned = dock_tool("dock_pin_at", json!({ "hwnd": hwnd as i64, "slot": slot }));
-    unsafe {
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    let pinned = dock_tool(
+        "dock_pin_or_queue",
+        json!({ "hwnd": hwnd as i64, "slot": slot }),
+    );
+    let queued = pinned
+        .as_ref()
+        .ok()
+        .and_then(|value| value.get("queued").and_then(Value::as_bool))
+        .unwrap_or(false);
+    if !queued {
+        unsafe {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
     }
     match pinned {
         Ok(value) if value.get("pinned").and_then(Value::as_bool) == Some(true) => {
@@ -2903,6 +2892,14 @@ fn open_app_impl(args: &Value, default_pin: bool) -> Result<Vec<Value>, String> 
             overlay_event("pin", Some(hwnd), -1, -1, &format!("slot {placed}"));
             Ok(vec![text_content(&format!(
                 "aberto e encaixado no slot {placed} (0x{:X})",
+                hwnd as usize
+            ))])
+        }
+        Ok(value) if value.get("queued").and_then(Value::as_bool) == Some(true) => {
+            let position = value.get("position").and_then(Value::as_u64).unwrap_or(1);
+            session_target(hwnd);
+            Ok(vec![text_content(&format!(
+                "aberto e na fila do dock (posição {position}); encaixa quando um slot vagar (0x{:X})",
                 hwnd as usize
             ))])
         }

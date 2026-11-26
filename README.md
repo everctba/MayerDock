@@ -147,6 +147,13 @@ use `pin:false` para abrir solto e `MAYERDOCK_AUTOPIN=0` para desligar esse padr
 Para testes isolados sem colidir com o sidecar do DSH, use o mesmo `MAYERDOCK_PIPE`
 (ex.: `\\.\pipe\MayerDock.Agent.Test`) no dock e no sidecar.
 
+**Fila de espera (slots cheios):** com os slots todos ocupados, `open_app` coloca o app
+numa **fila**: a janela fica oculta e o rodapé do dock mostra
+`▶ Próximo: <app> (+N na fila)`. Quando um slot é liberado (←, fechar a janela, unpin),
+o primeiro da fila **encaixa automaticamente**. Liberar tudo (ou fechar para a bandeja)
+esvazia a fila e devolve as janelas ao desktop. O máximo de janelas **encaixadas** é 3
+(slots); a fila é só de espera. Estado em `layout_info`/`status` (`pending`).
+
 **Modo CI:** `--ci` desliga texto humano, bloqueia ações que dependem de interação
 (`focus_lease`/`global_*`) e aplica timeout padrão de 120 s; `--report-junit` gera XML
 para o runner e `--report-json` o relatório completo como artefato. `--headless`/`--no-ui`
