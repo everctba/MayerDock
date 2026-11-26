@@ -16,6 +16,51 @@ use windows_sys::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
 use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    FindWindowW, GetWindowRect, SystemParametersInfoW, SPIF_SENDCHANGE, SPI_SETWORKAREA,
+};
+
+/// Reseta a área de trabalho do monitor primário (remove reserva órfã de AppBar).
+pub fn reset_workarea() -> bool {
+    unsafe {
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return false;
+        }
+        let mut work = info.rcMonitor;
+        let tray_class = wide("Shell_TrayWnd");
+        let tray = FindWindowW(tray_class.as_ptr(), ptr::null());
+        if !tray.is_null() {
+            let mut bar: RECT = std::mem::zeroed();
+            if GetWindowRect(tray, &mut bar) != 0 {
+                let bar_w = bar.right - bar.left;
+                let bar_h = bar.bottom - bar.top;
+                let center_x = work.left + (work.right - work.left) / 2;
+                let center_y = work.top + (work.bottom - work.top) / 2;
+                if bar_w <= bar_h {
+                    // Taskbar vertical (esquerda/direita).
+                    if bar.left >= center_x {
+                        work.right = work.right.min(bar.left);
+                    } else {
+                        work.left = work.left.max(bar.right);
+                    }
+                } else if bar.top >= center_y {
+                    work.bottom = work.bottom.min(bar.top);
+                } else {
+                    work.top = work.top.max(bar.bottom);
+                }
+            }
+        }
+        SystemParametersInfoW(
+            SPI_SETWORKAREA,
+            0,
+            &mut work as *mut RECT as *mut core::ffi::c_void,
+            SPIF_SENDCHANGE,
+        ) != 0
+    }
+}
 
 /// Tema do Windows (claro/escuro) via `AppsUseLightTheme` no registro.
 pub fn theme_is_dark() -> bool {

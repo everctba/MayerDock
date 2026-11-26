@@ -20,6 +20,7 @@ Console / CI (não abre o dock):\r\n\
   mayerdock.exe --capture (--title T | --hwnd N) [--out ARQ] [--json]\r\n\
   mayerdock.exe --script ARQ.json [--json] [--timeout ms]\r\n\
   mayerdock.exe --script ARQ.json --ci --report-junit junit.xml --report-json out.json\r\n\
+  mayerdock.exe --reset-workarea  restaura a área de trabalho (AppBar órfã)\r\n\
   mayerdock.exe --version | --help\r\n\
 \r\n\
 Flags: --json (saída legível por máquina), --silent/--quiet (só JSON/erros),\r\n\
@@ -54,6 +55,7 @@ fn main() {
     let mut headless = false;
     let mut junit: Option<String> = None;
     let mut report_json: Option<String> = None;
+    let mut reset_workarea = false;
     let _allow_global_input = false;
 
     let mut index = 0;
@@ -63,6 +65,7 @@ fn main() {
             "--silent" | "--quiet" => silent = true,
             "--ci" => ci = true,
             "--headless" | "--no-ui" => headless = true,
+            "--reset-workarea" => reset_workarea = true,
             "--report-junit" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -152,6 +155,14 @@ fn main() {
     if status {
         dock::print_status(machine);
         return;
+    }
+    if reset_workarea {
+        let ok = win::reset_workarea();
+        win::console_print(&format!(
+            "reset_workarea: {}\r\n",
+            if ok { "ok" } else { "falhou" }
+        ));
+        std::process::exit(if ok { 0 } else { 1 });
     }
     if list {
         std::process::exit(mcp::cli_list_windows(machine));

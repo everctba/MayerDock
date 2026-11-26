@@ -432,11 +432,19 @@ O mesmo build gera um pacote **MSIX** (F1/F2) sem tocar no Inno/portátil:
 2. Em **☰ → Divisões**, escolha 1, 2 ou 3 janelas empilhadas.
 3. Clique no corpo dele e escolha a primeira janela; repita para as demais divisões.
 4. Trabalhe; maximize o que quiser — as janelas param na borda do dock.
-5. **←** libera todas as janelas; **Sair do MayerDock** remove o dock e restaura a área de
-   trabalho.
+5. **←** libera todas as janelas. O **✕** agora **fecha para a bandeja**: libera as
+   janelas, remove a reserva do AppBar (desktop volta ao normal) e mantém o processo vivo
+   para reabrir com duplo clique no ícone. Para encerrar de verdade: menu da bandeja →
+   **Sair do MayerDock**.
 
 O recurso global: `Ctrl+Alt+M` alterna mostrar/ocultar o dock. Na bandeja, clique duplo
 também alterna e o botão direito abre o menu.
+
+**Área fantasma / AppBar órfã:** se o dock for morto por crash/`taskkill` (sem cleanup), o
+Windows pode manter a faixa reservada. O menu **☰ → Restaurar área de trabalho** (e a CLI
+`mayerdock.exe --reset-workarea`) recalcula a workarea do monitor primário descontando a
+taskbar e restaura a área. O dock também faz esse reset ao iniciar e como fallback quando
+o `ABM_REMOVE` falha.
 
 ## Layout: largura, divisórias e undo (v1.5)
 

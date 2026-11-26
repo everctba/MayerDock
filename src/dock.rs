@@ -134,6 +134,8 @@ const IDM_CONTROL: usize = 104;
 const IDM_OVERLAY: usize = 105;
 /// Abre o diálogo com instruções MCP (copiar).
 const IDM_MCP_HELP: usize = 106;
+/// Restaura a área de trabalho (remove reserva órfã de AppBar).
+const IDM_RESET_WORKAREA: usize = 107;
 /// Favoritos do launcher (menu): 200 + índice.
 const IDM_FAVORITE_BASE: usize = 200;
 const IDM_FAVORITE_LAST: usize = 208;
@@ -426,6 +428,9 @@ pub fn run(cfg: Config) -> i32 {
         return 0;
     }
 
+    // Limpa reserva órfã de uma instância anterior (crash/taskkill).
+    let _ = win::reset_workarea();
+
     let width = cfg.width.clamp(MIN_W, MAX_W);
     let (mon, _work) = win::primary_monitor_rects();
     let height = (mon.bottom - mon.top).max(200);
@@ -633,10 +638,12 @@ fn remove_appbar(s: &mut State) {
         return;
     }
     let mut abd = s.abd;
-    unsafe {
-        SHAppBarMessage(ABM_REMOVE, &mut abd);
-    }
+    let ok = unsafe { SHAppBarMessage(ABM_REMOVE, &mut abd) };
     s.registered = false;
+    if ok == 0 {
+        // Shell pode ter deixado a workarea reservada; restaura como fallback.
+        let _ = win::reset_workarea();
+    }
     win::log("appbar removida (área de trabalho restaurada)");
 }
 
@@ -1168,6 +1175,18 @@ fn toggle_manual(s: &mut State) {
     } else {
         "dock visível (manual)"
     });
+}
+
+/// "Fechar" (✕) = esconder para a bandeja e liberar a área do desktop.
+/// A saída real fica no menu da bandeja ("Sair do MayerDock").
+fn close_to_tray(s: &mut State) {
+    if !s.manual_hidden {
+        release_all(s);
+        s.manual_hidden = true;
+    }
+    update_visibility(s);
+    tray_update(s);
+    win::log("dock: fechado para a bandeja (clique no ícone reabre; menu Sair encerra)");
 }
 
 fn update_visibility(s: &mut State) {
@@ -1832,13 +1851,21 @@ fn open_menu(s: &mut State) {
 fn on_menu_command(s: &mut State, id: usize) {
     match id {
         IDM_EXIT => unsafe {
-            PostMessageW(s.hwnd, WM_CLOSE, 0, 0);
+            // Sair de verdade: destroy (cleanup remove AppBar/tray).
+            DestroyWindow(s.hwnd);
         },
         IDM_TOGGLE => toggle_manual(s),
         IDM_STOP_AGENT => stop_agent(s),
         IDM_CONTROL => toggle_human_control(s),
         IDM_OVERLAY => toggle_overlay(s),
         IDM_MCP_HELP => crate::mcp_help::show(s.hwnd),
+        IDM_RESET_WORKAREA => {
+            let ok = win::reset_workarea();
+            win::log(&format!(
+                "área de trabalho restaurada: {}",
+                if ok { "ok" } else { "falhou" }
+            ));
+        }
         IDM_FAVORITE_BASE..=IDM_FAVORITE_LAST => {
             if let Some((label, command)) = s.favorites.get(id - IDM_FAVORITE_BASE).cloned() {
                 win::log(&format!("launcher: favorito {label:?}"));
@@ -2918,7 +2945,13 @@ fn tray_tip(s: &State) -> String {
             tip.push_str(&format!(" · {} ações", agent.actions));
             tip
         }
-        None => "MayerDock — ocioso".to_string(),
+        None => {
+            if s.manual_hidden {
+                "MayerDock — na bandeja (clique para abrir)".to_string()
+            } else {
+                "MayerDock — ocioso".to_string()
+            }
+        }
     }
 }
 
@@ -3332,6 +3365,11 @@ fn tray_menu(s: &mut State) {
         kind: menu::Kind::Sep,
     });
     items.push(menu::MenuItem {
+        label: "Restaurar área de trabalho".to_string(),
+        cmd: IDM_RESET_WORKAREA,
+        kind: menu::Kind::Item,
+    });
+    items.push(menu::MenuItem {
         label: "Instruções MCP (copiar)".to_string(),
         cmd: IDM_MCP_HELP,
         kind: menu::Kind::Item,
@@ -3584,7 +3622,9 @@ unsafe extern "system" fn dock_proc(
             0
         }
         WM_CLOSE => {
-            DestroyWindow(hwnd);
+            // "Fechar" = esconder para a bandeja (libera a área). Sair de
+            // verdade só pelo menu da bandeja (IDM_EXIT).
+            close_to_tray(s);
             0
         }
         WM_DESTROY => {
