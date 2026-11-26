@@ -340,6 +340,29 @@ fn dock_window_exists() -> bool {
     unsafe { !FindWindowW(class.as_ptr(), std::ptr::null()).is_null() }
 }
 
+fn autopin_enabled() -> bool {
+    std::env::var("MAYERDOCK_AUTOPIN").ok().as_deref() != Some("0")
+}
+
+fn dock_has_free_slot() -> bool {
+    for attempt in 0..6 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(180));
+        }
+        if let Ok(value) = dock_tool("list_slots", json!({})) {
+            return value
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .any(|slot| slot.get("occupied").and_then(Value::as_bool) == Some(false))
+                })
+                .unwrap_or(false);
+        }
+    }
+    false
+}
+
 fn autostart_enabled() -> bool {
     matches!(
         std::env::var("MAYERDOCK_AUTOSTART_DOCK").ok().as_deref(),
@@ -653,8 +676,9 @@ fn tools() -> Value {
         },
         {
             "name": "open_app",
-            "description": "Abre um executável/arquivo (ShellExecute) sem ativar. Com pin=true \
-                espera a janela, esconde, encaixa no slot (opcional slot N) e mostra.",
+            "description": "Abre um executável/arquivo (ShellExecute) sem ativar. Se o dock \
+                estiver aberto com slot livre, já abre ENCAIXADO (use pin:false para abrir \
+                solto; pin:true/slot forçam encaixe). Espera a janela, esconde, posiciona e mostra.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2784,14 +2808,17 @@ fn open_app_impl(args: &Value, default_pin: bool) -> Result<Vec<Value>, String> 
         .and_then(Value::as_str)
         .ok_or("informe path")?;
     let arguments = args.get("args").and_then(Value::as_str).unwrap_or("");
-    let pin = args
-        .get("pin")
-        .and_then(Value::as_bool)
-        .unwrap_or(default_pin);
     let slot = args
         .get("slot")
         .and_then(Value::as_u64)
         .map(|value| value as usize);
+    let pin_arg = args.get("pin").and_then(Value::as_bool);
+    // Sem pin explícito: se o dock está aberto e tem slot livre, abre já dentro.
+    let auto_pin = pin_arg.is_none()
+        && autopin_enabled()
+        && dock_window_exists()
+        && (slot.is_some() || dock_has_free_slot());
+    let pin = pin_arg.unwrap_or(default_pin || auto_pin);
     let timeout = args
         .get("timeout_ms")
         .and_then(Value::as_u64)

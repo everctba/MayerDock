@@ -142,6 +142,8 @@ da janela por geometria, sem screenshot).
 
 **Abrir já no slot:** `open_in_slot {path, slot?}` (ou `open_app {pin:true, slot?}`)
 espera o HWND do app, esconde, encaixa e mostra — visualmente abre “direto” no dock.
+**O `open_app` agora encaixa por padrão** quando o dock está aberto e há slot livre;
+use `pin:false` para abrir solto e `MAYERDOCK_AUTOPIN=0` para desligar esse padrão.
 Para testes isolados sem colidir com o sidecar do DSH, use o mesmo `MAYERDOCK_PIPE`
 (ex.: `\\.\pipe\MayerDock.Agent.Test`) no dock e no sidecar.
 
@@ -196,7 +198,7 @@ que harnesses compatíveis (Claude Code, Cursor, DSH) consomem. Integra com o do
 | `status` | Versão, PID, janelas e estado do dock/sessão |
 | `list_windows` | Janelas visíveis (título, classe, PID, retângulo, DPI) |
 | `capture_window` | PNG de **uma** janela (por `hwnd` ou `title`), sem mover o cursor |
-| `open_app` | Abre um app **sem ativar** (`ShellExecute` + `SW_SHOWNOACTIVATE`); `pin:true` + `slot` encaixa direto |
+| `open_app` | Abre um app **sem ativar**; se o dock está aberto com slot livre, **já encaixa** (`pin:false` abre solto; `slot` escolhe) |
 | `open_in_slot` | Abre **já no slot**: espera o HWND, esconde, posiciona e mostra — sem pulo visual |
 | `window_state` | Maximiza/minimiza/restaura/fecha sem trazer para frente |
 | `list_slots` | Slots do dock (ocupado, hwnd, título, retângulo) — requer o dock aberto |
