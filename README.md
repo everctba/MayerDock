@@ -154,6 +154,16 @@ o primeiro da fila **encaixa automaticamente**. Liberar tudo (ou fechar para a b
 esvazia a fila e devolve as janelas ao desktop. O máximo de janelas **encaixadas** é 3
 (slots); a fila é só de espera. Estado em `layout_info`/`status` (`pending`).
 
+**Modo atrás (inverso do DeskPins):** ligue em
+**bandeja/☰ → Modo atrás (janelas no fundo)** ou `MAYERDOCK_BOTTOM=1` (persistido em
+`bottom.txt`). Com ele, as janelas **encaixadas** não usam `HWND_TOPMOST`: são posicionadas
+com `HWND_BOTTOM`, ficando abaixo dos outros apps (o dock/HUD continuam por cima). Se uma
+janela do teste for para foreground durante a sessão do agente, um watchdog
+(`EVENT_SYSTEM_FOREGROUND`) a **rebaixa de novo**; quando você clica em **Assumir**, o
+rebaixamento é suspenso para não brigar com o seu mouse. Desligar volta ao comportamento
+topmost normal. Limitações: apps que forçam topmost/fullscreen podem escapar; a janela
+pode continuar com foco mesmo atrás (por isso o modo é opt-in).
+
 **Modo CI:** `--ci` desliga texto humano, bloqueia ações que dependem de interação
 (`focus_lease`/`global_*`) e aplica timeout padrão de 120 s; `--report-junit` gera XML
 para o runner e `--report-json` o relatório completo como artefato. `--headless`/`--no-ui`

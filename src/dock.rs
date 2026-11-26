@@ -47,16 +47,16 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     IsIconic, IsWindow, IsWindowVisible, KillTimer, LoadCursorW, LoadIconW, MessageBoxW,
     PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SendMessageW, SetCursor,
     SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
-    TranslateMessage, EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST,
-    IDC_ARROW, IDC_SIZENS, IDC_SIZEWE, IDI_APPLICATION, IDYES, LWA_COLORKEY, MB_ICONQUESTION,
-    MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MSG, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER,
-    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-    WS_POPUP,
+    TranslateMessage, EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, HWND_BOTTOM, HWND_NOTOPMOST,
+    HWND_TOPMOST, IDC_ARROW, IDC_SIZENS, IDC_SIZEWE, IDI_APPLICATION, IDYES, LWA_COLORKEY,
+    MB_ICONQUESTION, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MSG,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_CREATE, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR,
+    WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use serde_json::{json, Value};
@@ -153,6 +153,8 @@ const IDM_OVERLAY: usize = 105;
 const IDM_MCP_HELP: usize = 106;
 /// Restaura a área de trabalho (remove reserva órfã de AppBar).
 const IDM_RESET_WORKAREA: usize = 107;
+/// Liga/desliga o "modo atrás" (janelas do dock no fundo).
+const IDM_BOTTOM: usize = 108;
 /// Favoritos do launcher (menu): 200 + índice.
 const IDM_FAVORITE_BASE: usize = 200;
 const IDM_FAVORITE_LAST: usize = 208;
@@ -238,6 +240,8 @@ struct State {
     overlay_pill: Option<OverlayPill>,
     /// Fila de apps aguardando slot livre (máx. slots = 3).
     pending: Vec<PendingApp>,
+    /// "Modo atrás": janelas encaixadas no fundo da pilha Z (não topmost).
+    bottom_mode: bool,
     slot_count: usize,
     slots: Vec<Option<Slot>>,
     picking: Vec<HWND>,
@@ -351,6 +355,7 @@ impl State {
             overlay_events: Vec::new(),
             overlay_pill: None,
             pending: Vec::new(),
+            bottom_mode: load_bottom_mode(),
             slot_count,
             slots: vec![None; slot_count],
             picking: Vec::new(),
@@ -955,7 +960,11 @@ fn sync_slot(s: &mut State, force: bool) {
         unsafe {
             SetWindowPos(
                 hwnd,
-                HWND_TOPMOST,
+                if s.bottom_mode {
+                    HWND_BOTTOM
+                } else {
+                    HWND_TOPMOST
+                },
                 target.left,
                 target.top,
                 target.right - target.left,
@@ -2015,6 +2024,7 @@ fn on_menu_command(s: &mut State, id: usize) {
                 if ok { "ok" } else { "falhou" }
             ));
         }
+        IDM_BOTTOM => toggle_bottom(s),
         IDM_FAVORITE_BASE..=IDM_FAVORITE_LAST => {
             if let Some((label, command)) = s.favorites.get(id - IDM_FAVORITE_BASE).cloned() {
                 win::log(&format!("launcher: favorito {label:?}"));
@@ -2573,6 +2583,7 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
             "split1": s.split1,
             "docked": s.slots.iter().flatten().count(),
             "pending": s.pending.len(),
+            "bottom_mode": s.bottom_mode,
             "paused": s.agent_paused,
             "agent": s.agent.as_ref().map(|agent| json!({
                 "name": agent.name,
@@ -2609,6 +2620,7 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                 },
                 "slot_rects": slot_rects,
                 "pending": s.pending.iter().map(|app| app.title.clone()).collect::<Vec<String>>(),
+                "bottom_mode": s.bottom_mode,
                 "undo": s.undo_stack.len(),
                 "redo": s.redo_stack.len(),
                 "editing": s.edit_pre.is_some(),
@@ -3239,6 +3251,67 @@ fn save_overlay_enabled(enabled: bool) {
     let _ = std::fs::write(overlay_path(), if enabled { "1" } else { "0" });
 }
 
+// ---------------------------------------------------------------------------
+// Modo atrás (bottom mode): janelas do dock no fundo da pilha Z
+// ---------------------------------------------------------------------------
+
+fn bottom_path() -> std::path::PathBuf {
+    crate::config::data_dir().join("bottom.txt")
+}
+
+fn load_bottom_mode() -> bool {
+    if std::env::var("MAYERDOCK_BOTTOM").ok().as_deref() == Some("1") {
+        return true;
+    }
+    std::fs::read_to_string(bottom_path())
+        .map(|text| text.trim() == "1")
+        .unwrap_or(false)
+}
+
+fn save_bottom_mode(enabled: bool) {
+    let _ = std::fs::create_dir_all(crate::config::data_dir());
+    let _ = std::fs::write(bottom_path(), if enabled { "1" } else { "0" });
+}
+
+fn toggle_bottom(s: &mut State) {
+    s.bottom_mode = !s.bottom_mode;
+    save_bottom_mode(s.bottom_mode);
+    sync_slot(s, true);
+    win::log(&format!(
+        "modo atrás: {}",
+        if s.bottom_mode { "ligado" } else { "desligado" }
+    ));
+    unsafe {
+        InvalidateRect(s.hwnd, ptr::null(), 0);
+    }
+}
+
+/// Se uma janela do dock subiu para foreground durante a sessão do agente,
+/// rebaixa de novo (suspenso quando o humano assume o controle).
+fn reassert_bottom(s: &mut State) {
+    if !s.bottom_mode || s.agent.is_none() || s.agent_paused {
+        return;
+    }
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.is_null() || foreground == s.hwnd {
+        return;
+    }
+    if s.slots.iter().flatten().any(|slot| slot.hwnd == foreground) {
+        unsafe {
+            SetWindowPos(
+                foreground,
+                HWND_BOTTOM,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+        win::log("modo atrás: janela do teste rebaixada de novo");
+    }
+}
+
 fn overlay_destroy(s: &mut State) {
     unsafe {
         if !s.overlay_hwnd.is_null() {
@@ -3628,6 +3701,14 @@ fn tray_menu(s: &mut State) {
         kind: menu::Kind::Sep,
     });
     items.push(menu::MenuItem {
+        label: format!(
+            "Modo atrás (janelas no fundo): {}",
+            if s.bottom_mode { "ligado" } else { "desligado" }
+        ),
+        cmd: IDM_BOTTOM,
+        kind: menu::Kind::Item,
+    });
+    items.push(menu::MenuItem {
         label: "Restaurar área de trabalho".to_string(),
         cmd: IDM_RESET_WORKAREA,
         kind: menu::Kind::Item,
@@ -3835,6 +3916,7 @@ unsafe extern "system" fn dock_proc(
         }
         WM_FOREGROUND => {
             update_visibility(s);
+            reassert_bottom(s);
             0
         }
         WM_HOTKEY => {
