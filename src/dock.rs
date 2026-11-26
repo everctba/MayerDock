@@ -16,9 +16,9 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, ClientToScreen, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
     FillRect, InvalidateRect, SelectObject, SetBkMode, SetTextColor, UpdateWindow,
-    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER,
-    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FF_DONTCARE,
-    HDC, HFONT, OUT_DEFAULT_PRECIS, PAINTSTRUCT, TRANSPARENT,
+    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CALCRECT, DT_CENTER,
+    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_TOP, DT_VCENTER, DT_WORDBREAK,
+    FF_DONTCARE, HDC, HFONT, OUT_DEFAULT_PRECIS, PAINTSTRUCT, TRANSPARENT,
 };
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe};
@@ -110,12 +110,22 @@ static mut AGENT_STOP: bool = false;
 /// Sessão de agente visível no HUD do dock.
 struct AgentInfo {
     name: String,
+    /// Projeto/chat de onde veio a sessão (cwd do harness ou MAYERDOCK_PROJECT).
+    project: String,
     activity: String,
     actions: u32,
     clicks: u32,
     captures: u32,
     /// PID do sidecar MCP (para o kill switch encerrar o processo).
     pid: u32,
+}
+
+/// Pílula persistente na janela-alvo: "cliente · projeto".
+#[derive(Clone)]
+struct OverlayPill {
+    text: String,
+    hwnd: HWND,
+    until: std::time::Instant,
 }
 
 /// Pedido do pipe entregue à thread da UI via `SendMessage`.
@@ -218,6 +228,7 @@ struct State {
     overlay_enabled: bool,
     overlay_hwnd: HWND,
     overlay_events: Vec<OverlayEvent>,
+    overlay_pill: Option<OverlayPill>,
     slot_count: usize,
     slots: Vec<Option<Slot>>,
     picking: Vec<HWND>,
@@ -329,6 +340,7 @@ impl State {
             overlay_enabled: load_overlay_enabled(),
             overlay_hwnd: ptr::null_mut(),
             overlay_events: Vec::new(),
+            overlay_pill: None,
             slot_count,
             slots: vec![None; slot_count],
             picking: Vec::new(),
@@ -1435,7 +1447,7 @@ fn paint(hwnd: HWND, s: &mut State) {
                 bottom: header_h,
             };
             if hud.right > hud.left + px(s, 40) {
-                let mut text = format!("● {} · {}", agent.name, agent.activity);
+                let mut text = format!("● {} · {} · {}", agent.name, agent.project, agent.activity);
                 if s.agent_paused {
                     text.push_str(" · você no controle");
                 }
@@ -2426,6 +2438,7 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
             "paused": s.agent_paused,
             "agent": s.agent.as_ref().map(|agent| json!({
                 "name": agent.name,
+                "project": agent.project,
                 "activity": agent.activity,
                 "actions": agent.actions
             }))
@@ -2591,15 +2604,23 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
                 .pointer("/args/pid")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as u32;
+            let project = req
+                .pointer("/args/project")
+                .and_then(Value::as_str)
+                .unwrap_or("projeto")
+                .to_string();
             s.agent = Some(AgentInfo {
                 activity: "conectado".to_string(),
                 name: name.clone(),
+                project: project.clone(),
                 actions: 0,
                 clicks: 0,
                 captures: 0,
                 pid,
             });
-            win::log(&format!("agent: sessão iniciada ({name}, pid {pid})"));
+            win::log(&format!(
+                "agent: sessão iniciada ({name} @ {project}, pid {pid})"
+            ));
             tray_update(s);
             ok(json!({ "session": name }))
         }
@@ -2727,6 +2748,10 @@ fn handle_agent_request(s: &mut State, req: &Value) -> Value {
             overlay_add(s, req);
             ok(json!({ "shown": s.overlay_enabled }))
         }
+        "session_pill" => {
+            session_pill(s, req);
+            ok(json!({ "shown": !s.overlay_hwnd.is_null() }))
+        }
         other => err(&format!("tool desconhecida: {other}")),
     }
 }
@@ -2844,6 +2869,7 @@ fn cleanup(s: &mut State) {
         agent_pipe_close();
     }
     s.agent = None;
+    s.overlay_pill = None;
     release_all(s);
     remove_appbar(s);
     tray_remove(s);
@@ -2934,7 +2960,7 @@ fn tray_tip(s: &State) -> String {
             let mut tip = if s.agent_paused {
                 format!("MayerDock — humano no controle ({})", agent.name)
             } else {
-                format!("MayerDock — ● {}", agent.name)
+                format!("MayerDock — ● {} @ {}", agent.name, agent.project)
             };
             if let Some(lease) = &s.lease {
                 let remaining = lease
@@ -3080,6 +3106,10 @@ fn overlay_ensure(s: &mut State) {
     if !s.overlay_enabled {
         return;
     }
+    overlay_window_ensure(s);
+}
+
+fn overlay_window_ensure(s: &mut State) {
     unsafe {
         if s.overlay_hwnd.is_null() {
             let class = win::wide("MayerDock.Overlay.v1");
@@ -3208,6 +3238,34 @@ fn overlay_add(s: &mut State, req: &Value) {
     }
 }
 
+fn session_pill(s: &mut State, req: &Value) {
+    let text = req
+        .pointer("/args/text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let hwnd = req
+        .pointer("/args/hwnd")
+        .and_then(Value::as_i64)
+        .map(|raw| raw as usize as HWND)
+        .unwrap_or(ptr::null_mut());
+    if text.is_empty() || hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
+        return;
+    }
+    s.overlay_pill = Some(OverlayPill {
+        text,
+        hwnd,
+        until: std::time::Instant::now() + std::time::Duration::from_millis(4500),
+    });
+    overlay_window_ensure(s);
+    unsafe {
+        SetTimer(s.hwnd, TIMER_OVERLAY, 50, None);
+        if !s.overlay_hwnd.is_null() {
+            InvalidateRect(s.overlay_hwnd, ptr::null(), 0);
+        }
+    }
+}
+
 unsafe extern "system" fn overlay_proc(
     hwnd: HWND,
     msg: u32,
@@ -3261,6 +3319,65 @@ unsafe extern "system" fn overlay_proc(
                         &mut text,
                         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
                     );
+                }
+                // Pílula "cliente · projeto" na janela que o agente está usando.
+                if let Some(pill) = &s.overlay_pill {
+                    if now < pill.until && IsWindow(pill.hwnd) != 0 {
+                        let mut window_rect: RECT = std::mem::zeroed();
+                        GetWindowRect(pill.hwnd, &mut window_rect);
+                        let label = format!("● {}", pill.text);
+                        let label_wide = win::wide(&label);
+                        let old_font = SelectObject(hdc, s.font_hint);
+                        let mut measure: RECT = std::mem::zeroed();
+                        DrawTextW(
+                            hdc,
+                            label_wide.as_ptr(),
+                            -1,
+                            &mut measure,
+                            DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX,
+                        );
+                        let pad = px(s, 8);
+                        let text_w = measure.right - measure.left;
+                        let text_h = measure.bottom - measure.top;
+                        let x = window_rect.right - text_w - px(s, 20);
+                        let y = window_rect.top + px(s, 10);
+                        let card = RECT {
+                            left: x - pad,
+                            top: y - pad / 2,
+                            right: x + text_w + pad,
+                            bottom: y + text_h + pad / 2,
+                        };
+                        let bg = CreateSolidBrush(rgb(18, 20, 28));
+                        FillRect(hdc, &card, bg);
+                        DeleteObject(bg);
+                        let accent = CreateSolidBrush(rgb(74, 112, 240));
+                        FillRect(
+                            hdc,
+                            &RECT {
+                                left: card.left,
+                                top: card.top,
+                                right: card.left + px(s, 3),
+                                bottom: card.bottom,
+                            },
+                            accent,
+                        );
+                        DeleteObject(accent);
+                        let mut tr = RECT {
+                            left: x,
+                            top: y,
+                            right: x + text_w,
+                            bottom: y + text_h,
+                        };
+                        draw_text(
+                            hdc,
+                            s.font_hint,
+                            rgb(232, 238, 255),
+                            &label,
+                            &mut tr,
+                            DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX,
+                        );
+                        SelectObject(hdc, old_font);
+                    }
                 }
             }
             EndPaint(hwnd, &ps);
@@ -3489,7 +3606,15 @@ unsafe extern "system" fn dock_proc(
             if wparam == TIMER_OVERLAY {
                 let now = std::time::Instant::now();
                 s.overlay_events.retain(|event| event.until > now);
-                if s.overlay_events.is_empty() {
+                if s.overlay_pill
+                    .as_ref()
+                    .map(|pill| now >= pill.until)
+                    .unwrap_or(false)
+                {
+                    s.overlay_pill = None;
+                }
+                let active = !s.overlay_events.is_empty() || s.overlay_pill.is_some();
+                if !active {
                     unsafe {
                         KillTimer(s.hwnd, TIMER_OVERLAY);
                     }

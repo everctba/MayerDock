@@ -498,6 +498,17 @@ Também entrou a tool MCP **`scroll`** (`hwnd,x,y,delta`, envio direcionado de
 Teste de fumaça: `python scripts\overlay_smoke.py` (overlay visível após ações, some
 depois de 1,2 s e toggle pela bandeja).
 
+**Pílula de projeto/chat na janela-alvo:** o HUD agora mostra
+`● <cliente> · <projeto> · <atividade>` e, a cada ação do agente numa janela, aparece uma
+pílula flutuante no canto superior direito dela com `● <cliente> · <projeto> [· <chat>]`
+(visível por ~4,5 s após a última ação). O projeto vem do **cwd do sidecar**
+(`file_name`), com overrides por env:
+- `MAYERDOCK_PROJECT="FluxTV"` (nome do projeto/teste);
+- `MAYERDOCK_CHAT="checkout-ui"` (nome do chat/cenário, opcional).
+
+No DSH, se o sidecar herdar o cwd do perfil em vez do projeto, defina
+`MAYERDOCK_PROJECT` no `env` do `mcp-bundle`.
+
 ## Workspaces por contexto (v1.5)
 
 Ferramentas MCP (requerem o dock aberto):

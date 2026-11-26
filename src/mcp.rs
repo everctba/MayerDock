@@ -58,6 +58,47 @@ const MK_LBUTTON: usize = 1;
 /// Contadores exibidos no HUD (cliques e capturas desta sessão).
 static mut CLICKS: u32 = 0;
 static mut CAPTURES: u32 = 0;
+/// Nome do cliente MCP (ex.: "dsh client mcp") para a pílula/HUD.
+static mut SESSION_CLIENT: Option<String> = None;
+
+fn project_label() -> String {
+    if let Ok(value) = std::env::var("MAYERDOCK_PROJECT") {
+        if !value.trim().is_empty() {
+            return value;
+        }
+    }
+    if let Ok(dir) = std::env::current_dir() {
+        let name = dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "projeto".to_string());
+        if dir
+            .components()
+            .any(|part| part.as_os_str().eq_ignore_ascii_case("profiles"))
+        {
+            return format!("DSH ({name})");
+        }
+        return name;
+    }
+    "projeto".to_string()
+}
+
+/// Rótulo "cliente · projeto [· chat]" exibido na pílula da janela-alvo.
+fn session_label() -> String {
+    let client = unsafe { SESSION_CLIENT.clone() }.unwrap_or_else(|| "agente".to_string());
+    let project = project_label();
+    match std::env::var("MAYERDOCK_CHAT") {
+        Ok(chat) if !chat.trim().is_empty() => format!("{client} · {project} · {chat}"),
+        _ => format!("{client} · {project}"),
+    }
+}
+
+fn session_target(hwnd: HWND) {
+    let _ = dock_tool(
+        "session_pill",
+        json!({ "hwnd": hwnd as usize, "text": session_label() }),
+    );
+}
 
 /// `PW_RENDERFULLCONTENT` (windows-sys não expõe a constante).
 const PW_RENDERFULLCONTENT: u32 = 2;
@@ -261,10 +302,11 @@ fn dock() -> Result<&'static mut Dock, String> {
 }
 
 fn dock_session(name: &str) {
+    let project = project_label();
     if let Ok(dock) = dock() {
         let _ = dock.call(
             "session_hello",
-            json!({ "name": name, "pid": std::process::id() }),
+            json!({ "name": name, "pid": std::process::id(), "project": project }),
         );
     }
 }
@@ -484,6 +526,9 @@ fn handle(message: &Value, version: &str, _initialized: &mut bool) -> Value {
                 .and_then(Value::as_str)
                 .unwrap_or("agente")
                 .to_string();
+            unsafe {
+                SESSION_CLIENT = Some(client_name.clone());
+            }
             dock_session(&client_name);
             result(
                 id,
@@ -1730,6 +1775,7 @@ struct SavedCapture {
 /// Captura uma janela e grava o PNG (respeita `method` e `out` do args).
 fn save_capture(args: &Value) -> Result<SavedCapture, String> {
     let hwnd = ensure_target(args, "save_capture")?;
+    session_target(hwnd);
     let method = args.get("method").and_then(Value::as_str).unwrap_or("auto");
     let (png, width, height, dpi, used) = capture(hwnd, method)?;
     let file = match args.get("out").and_then(Value::as_str) {
@@ -1771,6 +1817,7 @@ fn save_capture(args: &Value) -> Result<SavedCapture, String> {
 
 fn capture_window(args: &Value) -> Result<Vec<Value>, String> {
     let saved = save_capture(args)?;
+    session_target(saved.hwnd);
     let title = window_title(saved.hwnd);
     let text = format!(
         "capturada: {title:?}\r\narquivo: {}\r\n{}x{} px dpi={:.0}%\r\nmétodo: {}\r\nbytes: {}",
@@ -1993,6 +2040,7 @@ fn run_script_action(
         }
         "capture" => {
             let saved = save_capture(args)?;
+            session_target(saved.hwnd);
             Ok((
                 json!({
                     "file": saved.file.display().to_string(),
@@ -2025,6 +2073,7 @@ fn run_script_action(
         }
         "get_text" => {
             let hwnd = ensure_target(args, "run_script_action")?;
+            session_target(hwnd);
             let text = window_message_text(hwnd).unwrap_or_else(|| window_title(hwnd));
             Ok((json!({ "text": text.clone() }), Some(json!(text))))
         }
@@ -2084,6 +2133,7 @@ fn run_script_action(
         }
         "assert_text" => {
             let hwnd = ensure_target(args, "run_script_action")?;
+            session_target(hwnd);
             let text = window_message_text(hwnd).unwrap_or_else(|| window_title(hwnd));
             let contains = args.get("contains").and_then(Value::as_str);
             let equals = args.get("equals").and_then(Value::as_str);
@@ -2822,6 +2872,7 @@ fn open_app_impl(args: &Value, default_pin: bool) -> Result<Vec<Value>, String> 
     match pinned {
         Ok(value) if value.get("pinned").and_then(Value::as_bool) == Some(true) => {
             let placed = value.get("slot").and_then(Value::as_u64).unwrap_or(0);
+            session_target(hwnd);
             overlay_event("pin", Some(hwnd), -1, -1, &format!("slot {placed}"));
             Ok(vec![text_content(&format!(
                 "aberto e encaixado no slot {placed} (0x{:X})",
@@ -2841,6 +2892,7 @@ fn open_app_impl(args: &Value, default_pin: bool) -> Result<Vec<Value>, String> 
 
 fn window_state(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = ensure_target(args, "window_state")?;
+    session_target(hwnd);
     let action = args
         .get("action")
         .and_then(Value::as_str)
@@ -2884,6 +2936,7 @@ struct ControlInfo {
 
 fn list_controls(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = ensure_target(args, "list_controls")?;
+    session_target(hwnd);
     dock_activity_if_connected("lendo controles");
     let controls = child_controls(hwnd);
     if controls.is_empty() {
@@ -2942,6 +2995,7 @@ unsafe extern "system" fn enum_child(hwnd: HWND, lparam: LPARAM) -> i32 {
 
 fn click(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = ensure_target(args, "click")?;
+    session_target(hwnd);
     let x = args.get("x").and_then(Value::as_i64).unwrap_or(0) as i32;
     let y = args.get("y").and_then(Value::as_i64).unwrap_or(0) as i32;
     let (cx, cy) = match args.get("coords").and_then(Value::as_str) {
@@ -2977,6 +3031,7 @@ fn click(args: &Value) -> Result<Vec<Value>, String> {
 
 fn scroll(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = ensure_target(args, "scroll")?;
+    session_target(hwnd);
     let delta = args.get("delta").and_then(Value::as_i64).unwrap_or(-120) as i16;
     let x = args.get("x").and_then(Value::as_i64).unwrap_or(10) as i32;
     let y = args.get("y").and_then(Value::as_i64).unwrap_or(10) as i32;
@@ -2996,6 +3051,7 @@ fn scroll(args: &Value) -> Result<Vec<Value>, String> {
 
 fn type_text(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = ensure_target(args, "type_text")?;
+    session_target(hwnd);
     let text = args
         .get("text")
         .and_then(Value::as_str)
@@ -3026,6 +3082,7 @@ fn type_text(args: &Value) -> Result<Vec<Value>, String> {
 
 fn send_key(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = ensure_target(args, "send_key")?;
+    session_target(hwnd);
     let key = args.get("key").ok_or("informe key")?;
     let vk: u32 = if let Some(code) = key.as_u64() {
         code as u32
@@ -3063,6 +3120,7 @@ fn send_key(args: &Value) -> Result<Vec<Value>, String> {
 
 fn get_text(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = ensure_target(args, "get_text")?;
+    session_target(hwnd);
     let text = window_message_text(hwnd).unwrap_or_else(|| window_title(hwnd));
     let text = untrusted_text(text, "get_text");
     Ok(vec![text_content(&format!(
@@ -3090,6 +3148,7 @@ fn window_message_text(hwnd: HWND) -> Option<String> {
 
 fn wait_for(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = ensure_target(args, "wait_for")?;
+    session_target(hwnd);
     let timeout = args
         .get("timeout_ms")
         .and_then(Value::as_u64)
@@ -3163,6 +3222,7 @@ fn require_lease() -> Result<(), String> {
 
 fn focus_lease(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = ensure_target(args, "focus_lease")?;
+    session_target(hwnd);
     let seconds = args
         .get("seconds")
         .and_then(Value::as_u64)
@@ -3291,6 +3351,7 @@ fn send_unicode(code: u16) {
 
 fn set_text(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = ensure_target(args, "set_text")?;
+    session_target(hwnd);
     let text = args
         .get("text")
         .and_then(Value::as_str)
@@ -3318,6 +3379,7 @@ fn set_text(args: &Value) -> Result<Vec<Value>, String> {
 
 fn control_click(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = ensure_target(args, "control_click")?;
+    session_target(hwnd);
     dock_activity_if_connected("acionando controle");
     let mut method = "BM_CLICK";
     let result = unsafe { SendMessageW(hwnd, BM_CLICK, 0, 0) };
@@ -3543,6 +3605,7 @@ fn run_powershell(script: &str) -> Result<String, String> {
 
 fn uia_query(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = ensure_target(args, "uia_query")?;
+    session_target(hwnd);
     let max = args
         .get("max")
         .and_then(Value::as_u64)
@@ -3592,6 +3655,7 @@ $out | ConvertTo-Json -Compress
 
 fn uia_invoke(args: &Value) -> Result<Vec<Value>, String> {
     let hwnd = ensure_target(args, "uia_invoke")?;
+    session_target(hwnd);
     let name = args
         .get("name")
         .and_then(Value::as_str)
