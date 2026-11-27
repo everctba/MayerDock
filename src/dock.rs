@@ -77,6 +77,8 @@ const TIMER_TICK: usize = 1;
 const TIMER_CONFETTI: usize = 2;
 /// Timer do overlay de ações (screencast key).
 const TIMER_OVERLAY: usize = 3;
+/// Retry de bandeja/AppBar depois do restart do Explorer.
+const TIMER_SHELL_RETRY: usize = 4;
 const HOTKEY_ID: i32 = 1;
 const HOTKEY_STOP_ID: i32 = 2;
 /// Undo/redo de layout (Memento) e cancelamento de edição.
@@ -242,6 +244,10 @@ struct State {
     pending: Vec<PendingApp>,
     /// "Modo atrás": janelas encaixadas no fundo da pilha Z (não topmost).
     bottom_mode: bool,
+    /// Bandeja criada com sucesso (usado no retry pós-restart do Explorer).
+    tray_created: bool,
+    /// Tentativas restantes de re-registrar bandeja/AppBar após shell restart.
+    shell_retry: u32,
     slot_count: usize,
     slots: Vec<Option<Slot>>,
     picking: Vec<HWND>,
@@ -356,6 +362,8 @@ impl State {
             overlay_pill: None,
             pending: Vec::new(),
             bottom_mode: load_bottom_mode(),
+            tray_created: false,
+            shell_retry: 0,
             slot_count,
             slots: vec![None; slot_count],
             picking: Vec::new(),
@@ -576,7 +584,7 @@ pub fn run(cfg: Config) -> i32 {
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         UpdateWindow(hwnd);
         SetTimer(hwnd, TIMER_TICK, 1000, None);
-        tray_add(s);
+        s.tray_created = tray_add(s);
 
         // Named pipe do Agent Workspace (MCP): sidecar conecta e usa as tools.
         start_agent_pipe(hwnd);
@@ -2203,7 +2211,7 @@ fn shell_restart(s: &mut State) {
     // Remove antes de adicionar: idempotente e cobre tanto o caso real (o shell
     // perdeu os registros) quanto uma notificação duplicada.
     tray_remove(s);
-    tray_add(s);
+    s.tray_created = tray_add(s);
     if !s.hidden {
         remove_appbar(s);
         register_appbar(s);
@@ -2227,9 +2235,47 @@ fn shell_restart(s: &mut State) {
             win::log("aviso: AppBar não re-registrou após restart do shell");
         }
     }
+    // O Explorer pode ainda estar subindo; tenta de novo por ~6 s.
+    if !s.tray_created || (!s.hidden && !s.registered) {
+        s.shell_retry = 15;
+        unsafe {
+            SetTimer(s.hwnd, TIMER_SHELL_RETRY, 400, None);
+        }
+        win::log("shell: agendando retry de bandeja/AppBar");
+    }
     keep_flux_above();
     unsafe {
         InvalidateRect(s.hwnd, ptr::null(), 0);
+    }
+}
+
+/// Uma tentativa de re-registrar bandeja/AppBar após restart do Explorer.
+fn retry_shell_registration(s: &mut State) {
+    s.shell_retry = s.shell_retry.saturating_sub(1);
+    if !s.tray_created {
+        tray_remove(s);
+        s.tray_created = tray_add(s);
+    }
+    if !s.hidden && !s.registered {
+        remove_appbar(s);
+        register_appbar(s);
+        if s.registered {
+            win::log("appbar re-registrada (retry)");
+            apply_appbar(s);
+            sync_slot(s, true);
+        }
+    }
+    let done = s.tray_created && (s.hidden || s.registered);
+    if done {
+        win::log("shell: bandeja/AppBar re-registradas com sucesso");
+        unsafe {
+            KillTimer(s.hwnd, TIMER_SHELL_RETRY);
+        }
+    } else if s.shell_retry == 0 {
+        win::log("aviso: bandeja/AppBar não voltaram após retries; reabra o dock se persistir");
+        unsafe {
+            KillTimer(s.hwnd, TIMER_SHELL_RETRY);
+        }
     }
 }
 
@@ -2336,6 +2382,7 @@ fn start_agent_pipe(hwnd: HWND) {
 
 fn agent_pipe_loop(hwnd: HWND, token: String) {
     let name = win::wide(&agent_pipe_name());
+    let mut create_failures: u32 = 0;
     loop {
         unsafe {
             if AGENT_STOP {
@@ -2353,9 +2400,21 @@ fn agent_pipe_loop(hwnd: HWND, token: String) {
                 ptr::null(),
             );
             if pipe.is_null() || pipe as isize == -1 {
-                win::log("agent pipe: CreateNamedPipeW falhou");
-                return;
+                // Durante o shutdown (kill switch/cleanup) a falha é esperada.
+                if AGENT_STOP {
+                    win::log("agent pipe: servidor encerrado (durante shutdown)");
+                    return;
+                }
+                create_failures += 1;
+                if create_failures >= 5 {
+                    win::log("agent pipe: CreateNamedPipeW falhou 5x; desistindo");
+                    return;
+                }
+                win::log("agent pipe: CreateNamedPipeW falhou (retry)");
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                continue;
             }
+            create_failures = 0;
             AGENT_PIPE = pipe;
             let connected = ConnectNamedPipe(pipe, ptr::null_mut());
             if AGENT_STOP {
@@ -2377,6 +2436,10 @@ fn agent_pipe_loop(hwnd: HWND, token: String) {
                 CloseHandle(pipe);
             }
             win::log("agent pipe: cliente desconectado");
+            if AGENT_STOP {
+                win::log("agent pipe: servidor encerrado");
+                return;
+            }
         }
     }
 }
@@ -3012,6 +3075,7 @@ fn cleanup(s: &mut State) {
     unsafe {
         KillTimer(s.hwnd, TIMER_TICK);
         KillTimer(s.hwnd, TIMER_OVERLAY);
+        KillTimer(s.hwnd, TIMER_SHELL_RETRY);
         overlay_destroy(s);
         UnregisterHotKey(s.hwnd, HOTKEY_ID);
         UnregisterHotKey(s.hwnd, HOTKEY_STOP_ID);
@@ -3615,7 +3679,7 @@ fn tray_nid(hwnd: HWND) -> NOTIFYICONDATAW {
     nid
 }
 
-fn tray_add(s: &State) {
+fn tray_add(s: &State) -> bool {
     let mut nid = tray_nid(s.hwnd);
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
@@ -3631,10 +3695,14 @@ fn tray_add(s: &State) {
     let ok = unsafe { Shell_NotifyIconW(NIM_ADD, &nid) };
     if ok == 0 {
         win::log("aviso: ícone da bandeja não foi criado");
-    } else if embedded.is_null() {
-        win::log("ícone da bandeja criado (genérico; recurso embutido ausente)");
+        false
     } else {
-        win::log("ícone da bandeja criado (embutido)");
+        if embedded.is_null() {
+            win::log("ícone da bandeja criado (genérico; recurso embutido ausente)");
+        } else {
+            win::log("ícone da bandeja criado (embutido)");
+        }
+        true
     }
 }
 
@@ -3855,6 +3923,10 @@ unsafe extern "system" fn dock_proc(
                         InvalidateRect(s.overlay_hwnd, ptr::null(), 0);
                     }
                 }
+                return 0;
+            }
+            if wparam == TIMER_SHELL_RETRY {
+                retry_shell_registration(s);
                 return 0;
             }
             if wparam == TIMER_CONFETTI {

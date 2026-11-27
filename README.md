@@ -377,6 +377,21 @@ usa só o arquivo):
 - **Auditoria JSONL** (`%APPDATA%\MayerDock\audit.jsonl`) registra `tool_call`,
   `tool_error`, `scope_denied`, `paused_denied`, `guardrail` e `injection_warning` —
   sem argumentos (privacidade), só `ts`/`event`/`tool`/`allowed`/`detail`.
+
+### Diagnóstico por log
+
+- `%APPDATA%\MayerDock\mayerdock.log` — ciclo de vida (dock, bandeja, AppBar, pipe),
+  sessões do agente, cada captura (`mcp: captura hwnd=... bytes=... -> arquivo`),
+  guardrails e falhas. Use `Get-Content ... -Tail 50 -Encoding UTF8`.
+- `%APPDATA%\MayerDock\audit.jsonl` — uma linha JSON por tool call/negação; bom para
+  contar `allowed:false` e achar `tool_error`.
+- `%APPDATA%\MayerDock\agent\<pid>\cap-*.png` — capturas feitas pelo MCP.
+- **Shell reiniciou:** o dock agenda retry (~6 s) de bandeja/AppBar; procure
+  `shell: agendando retry` e `re-registradas com sucesso`.
+- **Shutdown do agente:** `agent pipe: servidor encerrado` é normal no kill switch;
+  não é mais confundido com `CreateNamedPipeW falhou`.
+- **Browser/CDP:** `browser_launch` espera até `timeout_ms` (padrão 20 s) e retorna
+  erro explícito se o CDP não abrir, em vez de “sucesso” sem endpoint.
 - **Anti-prompt-injection:** todo texto vindo de janela/página/UIA é tratado como
   **dado não confiável**. Se casar com padrões típicos (`ignore previous instructions`,
   `<|im_start|>`, `powershell -enc`, `curl | bash`, …), a resposta ganha o aviso

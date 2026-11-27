@@ -995,6 +995,7 @@ fn tools() -> Value {
                     "url": { "type": "string" },
                     "headless": { "type": "boolean" },
                     "cdp_port": { "type": "integer" },
+                    "timeout_ms": { "type": "integer" },
                     "extra_flags": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -3485,6 +3486,11 @@ fn browser_launch(args: &Value) -> Result<Vec<Value>, String> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let port = args.get("cdp_port").and_then(Value::as_u64).unwrap_or(9222);
+    let timeout_ms = args
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(20_000)
+        .clamp(5_000, 60_000);
     let exe = find_browser().ok_or("Chrome/Edge não encontrado nesta máquina")?;
     // Profile por porta: evita conflito de "singleton" com outra instância
     // (um Chrome órfão no mesmo user-data-dir faria o novo launch sair sem a porta).
@@ -3543,11 +3549,13 @@ fn browser_launch(args: &Value) -> Result<Vec<Value>, String> {
     let mut version = String::new();
     let mut port_open = false;
     let mut last_error = String::new();
-    for attempt in 0..50 {
+    let mut logged_wait = false;
+    let started = std::time::Instant::now();
+    while (started.elapsed().as_millis() as u64) < timeout_ms {
         std::thread::sleep(std::time::Duration::from_millis(200));
         if let Ok(Some(status)) = child.try_wait() {
             last_error = format!("browser saiu cedo: {status}");
-            crate::win::log(&format!("mcp: cdP filho saiu cedo: {status}"));
+            crate::win::log(&format!("mcp: cdp filho saiu cedo: {status}"));
             break;
         }
         match cdp_probe(port) {
@@ -3561,21 +3569,30 @@ fn browser_launch(args: &Value) -> Result<Vec<Value>, String> {
             }
             Err(err) => {
                 last_error = err;
-                if attempt == 0 {
-                    crate::win::log(&format!("mcp: cdp probe (1ª tentativa): {last_error}"));
+                if !logged_wait {
+                    crate::win::log(&format!(
+                        "mcp: cdp aguardando (até {timeout_ms} ms): {last_error}"
+                    ));
+                    logged_wait = true;
                 }
             }
         }
     }
+    if version.is_empty() {
+        let _ = child.kill();
+        let _ = child.wait();
+        crate::win::log(&format!(
+            "mcp: browser_launch falhou pid={pid} cdp={endpoint} porta_aberta={port_open}: {last_error}"
+        ));
+        return Err(format!(
+            "browser abriu (pid {pid}) mas o CDP não respondeu em {timeout_ms} ms \
+             (porta_aberta={port_open}): {last_error}. Aumente timeout_ms ou use outra cdp_port."
+        ));
+    }
     crate::win::log(&format!(
-        "mcp: browser_launch pid={pid} headless={headless} cdp={endpoint} porta_aberta={port_open} versao={}",
-        if version.is_empty() { "não" } else { "sim" }
+        "mcp: browser_launch pid={pid} headless={headless} cdp={endpoint} porta_aberta={port_open} versao=sim"
     ));
-    let version_short: String = if version.is_empty() {
-        format!("(CDP indisponível: {last_error})")
-    } else {
-        version.chars().take(400).collect()
-    };
+    let version_short: String = version.chars().take(400).collect();
     Ok(vec![text_content(&format!(
         "browser: {exe}\npid: {pid}\nheadless: {headless}\ncdp: {endpoint} \
          (porta_aberta={port_open})\nprofile: {}\nflags: {}\n\nversão CDP: {version_short}\n\n{}",
